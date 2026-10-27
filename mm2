@@ -1,0 +1,1791 @@
+local players = game:GetService("Players")
+local runservice = game:GetService("RunService")
+local workspace = game:GetService("Workspace")
+local tweenservice = game:GetService("TweenService")
+local virtualuser = game:GetService("VirtualUser")
+local textservice = game:GetService("TextService")
+local inputservice = game:GetService("UserInputService")
+
+local localplayer = players.LocalPlayer
+
+-- ======================== GUI PARENT ========================
+local genv = (getgenv and getgenv()) or _G
+local safeGetHui = genv.gethui
+local safeSyn = genv.syn
+
+local hiddenUI = (safeGetHui and safeGetHui())
+    or (safeSyn and safeSyn.protect_gui and (function()
+        local folder = Instance.new("Folder")
+        safeSyn.protect_gui(folder)
+        folder.Parent = localplayer:WaitForChild("PlayerGui")
+        return folder
+    end)())
+    or game:GetService("CoreGui")
+
+-- ======================== SETTINGS ========================
+local autofarmcoins = false
+local autoreset = false
+local scriptrunning = true
+local chamEnabled = true
+
+local MIN_WIDTH = 220
+local BASE_HEIGHT = 184
+local ROUND_START_DELAY = 25
+local SAFE_RADIUS = 15
+local CHAM_REPAIR_INTERVAL = 0.75
+
+local COIN_REFRESH_INTERVAL = 2
+local EMPTY_SEARCH_WAIT = 0.15
+local COIN_TRAVEL_SPEED = 22
+
+local GUN_DEATH_RADIUS = 15
+
+local COLORS = {
+    Gun = Color3.fromRGB(0, 126, 245),
+    Knife = Color3.fromRGB(245, 0, 8),
+    Hero = Color3.fromRGB(255, 220, 0),
+    Default = Color3.fromRGB(255, 255, 255),
+}
+
+local function getOutlineColor(color)
+    return Color3.new(color.R * 0.5, color.G * 0.5, color.B * 0.5)
+end
+
+-- ======================== STATE ========================
+local activecoins = {}
+local activecoinset = {}
+local droppedGunChams = {}
+local chams = {}
+local globalConns = {}
+
+local istweening = false
+local activetween = nil
+local currenttargetcoin = nil
+local targethighlight = nil
+local noclipconnection = nil
+
+local isgameactive = false
+local waitingfornextround = false
+local currentmap = nil
+local roundgeneration = 0
+local preptimeremaining = 0
+local ischeckingmap = false
+
+local sheriffDiedThisRound = false
+local previousRoles = {}
+local currentSheriffUserId = nil
+
+-- Death positions are cleared at the beginning of each round.
+local recordedGunDeathPositions = {}
+
+local lastMurdUserId = nil
+local lastSherUserId = nil
+local lastHeroUserId = nil
+
+local scriptstarttime = tick()
+local roundsplayedcount = 0
+local hascountedcurrentround = false
+
+local currentstatustext = "disabled"
+local currentstatuscolor = Color3.fromRGB(150, 150, 150)
+
+local nextCoinRefresh = 0
+
+-- Auto Reset tracking
+local roundActiveStartTime = 0
+local lastAutoResetTick = 0
+local searchingCoinsStartTime = 0
+
+local function addConnection(connection)
+    table.insert(globalConns, connection)
+    return connection
+end
+
+-- ======================== CONNECTION / HIGHLIGHT CLEANUP ========================
+local function destroyGunCham(obj)
+    local data = droppedGunChams[obj]
+
+    if data then
+        if data.Highlight then
+            pcall(function()
+                data.Highlight:Destroy()
+            end)
+        end
+
+        droppedGunChams[obj] = nil
+    end
+end
+
+local function clearGunChams()
+    for obj in pairs(droppedGunChams) do
+        destroyGunCham(obj)
+    end
+
+    table.clear(droppedGunChams)
+end
+
+-- ======================== ANTI-AFK ========================
+local antiAfkTask = task.spawn(function()
+    while scriptrunning do
+        task.wait(300)
+
+        if not scriptrunning then
+            break
+        end
+
+        pcall(function()
+            virtualuser:CaptureController()
+            virtualuser:ClickButton2(Vector2.new(0, 0))
+        end)
+    end
+end)
+
+addConnection(localplayer.Idled:Connect(function()
+    if not scriptrunning then
+        return
+    end
+
+    pcall(function()
+        virtualuser:CaptureController()
+        virtualuser:ClickButton2(Vector2.new(0, 0))
+    end)
+end))
+
+-- ======================== COIN DETECTION ========================
+local function iscoin(obj)
+    if not obj or not obj:IsA("BasePart") then
+        return false
+    end
+
+    if not obj.Parent or obj.Transparency >= 1 then
+        return false
+    end
+
+    local name = string.lower(obj.Name)
+
+    return name:find("coin", 1, true) ~= nil
+        or name:find("candy", 1, true) ~= nil
+        or name:find("container", 1, true) ~= nil
+end
+
+local function addCoin(obj)
+    if not iscoin(obj) or activecoinset[obj] then
+        return
+    end
+
+    if not currentmap or not obj:IsDescendantOf(currentmap) then
+        return
+    end
+
+    activecoinset[obj] = true
+    table.insert(activecoins, obj)
+end
+
+local function removeCoin(obj)
+    if obj then
+        activecoinset[obj] = nil
+    end
+end
+
+local function refreshcoins()
+    table.clear(activecoins)
+    table.clear(activecoinset)
+
+    nextCoinRefresh = os.clock() + COIN_REFRESH_INTERVAL
+
+    if not currentmap or not currentmap.Parent then
+        return
+    end
+
+    for _, obj in ipairs(currentmap:GetDescendants()) do
+        addCoin(obj)
+    end
+end
+
+local function removeTargetHighlight()
+    if targethighlight then
+        targethighlight:Destroy()
+        targethighlight = nil
+    end
+end
+
+local function stopmovement()
+    if activetween then
+        pcall(function()
+            activetween:Cancel()
+        end)
+
+        activetween = nil
+    end
+
+    istweening = false
+    currenttargetcoin = nil
+    removeTargetHighlight()
+end
+
+-- ======================== NOCLIP ========================
+local function setnoclip(state)
+    if state then
+        if noclipconnection then
+            return
+        end
+
+        noclipconnection = runservice.Stepped:Connect(function()
+            if not scriptrunning or not autofarmcoins then
+                return
+            end
+
+            local char = localplayer.Character
+
+            if char then
+                for _, part in ipairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+    elseif noclipconnection then
+        noclipconnection:Disconnect()
+        noclipconnection = nil
+    end
+end
+
+-- ======================== GUI ========================
+local screengui = Instance.new("ScreenGui")
+screengui.Name = "autofarmgui"
+screengui.ResetOnSpawn = false
+screengui.Parent = hiddenUI
+
+local mainframe = Instance.new("Frame")
+mainframe.Name = "MainFrame"
+mainframe.Size = UDim2.fromOffset(MIN_WIDTH, BASE_HEIGHT)
+mainframe.Position = UDim2.new(0, 150, 0.5, -BASE_HEIGHT / 2)
+mainframe.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+mainframe.BackgroundTransparency = 0.8
+mainframe.BorderSizePixel = 0
+mainframe.Active = true
+mainframe.Parent = screengui
+
+Instance.new("UICorner", mainframe).CornerRadius = UDim.new(0, 8)
+
+local mainstroke = Instance.new("UIStroke")
+mainstroke.Color = Color3.fromRGB(65, 65, 65)
+mainstroke.Transparency = 0.3
+mainstroke.Thickness = 1
+mainstroke.Parent = mainframe
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 30)
+header.BackgroundTransparency = 1
+header.Active = true
+header.Parent = mainframe
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 1, 0)
+title.BackgroundTransparency = 1
+title.Text = "mm2"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextSize = 15
+title.Font = Enum.Font.FredokaOne
+title.Parent = header
+
+local titleStroke = Instance.new("UIStroke")
+titleStroke.Transparency = 0.4
+titleStroke.Color = Color3.new(0, 0, 0)
+titleStroke.Thickness = 1.5
+titleStroke.Parent = title
+
+-- ======================== DRAGGING ========================
+local dragging = false
+local dragStart
+local frameStart
+local dragInput
+local dragTween
+
+local function clampFramePosition(x, y)
+    local camera = workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+    local size = mainframe.AbsoluteSize
+
+    return UDim2.fromOffset(
+        math.clamp(x, 0, math.max(0, viewport.X - size.X)),
+        math.clamp(y, 0, math.max(0, viewport.Y - size.Y))
+    )
+end
+
+addConnection(header.InputBegan:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1
+        and input.UserInputType ~= Enum.UserInputType.Touch then
+        return
+    end
+
+    dragging = true
+    dragInput = input
+    dragStart = input.Position
+    frameStart = mainframe.AbsolutePosition
+
+    if dragTween then
+        dragTween:Cancel()
+        dragTween = nil
+    end
+end))
+
+addConnection(inputservice.InputChanged:Connect(function(input)
+    if not dragging or not dragStart or not frameStart then
+        return
+    end
+
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then
+        return
+    end
+
+    local delta = input.Position - dragStart
+    local target = clampFramePosition(
+        frameStart.X + delta.X,
+        frameStart.Y + delta.Y
+    )
+
+    if dragTween then
+        dragTween:Cancel()
+    end
+
+    dragTween = tweenservice:Create(
+        mainframe,
+        TweenInfo.new(0.07, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        {Position = target}
+    )
+
+    dragTween:Play()
+end))
+
+addConnection(inputservice.InputEnded:Connect(function(input)
+    if dragging and (
+        input == dragInput
+        or input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        dragging = false
+        dragInput = nil
+        dragStart = nil
+        frameStart = nil
+    end
+end))
+
+local abortbtn = Instance.new("TextButton")
+abortbtn.Size = UDim2.fromOffset(24, 24)
+abortbtn.Position = UDim2.new(1, -28, 0, 3)
+abortbtn.BackgroundTransparency = 1
+abortbtn.Text = "X"
+abortbtn.TextColor3 = Color3.new(1, 1, 1)
+abortbtn.TextSize = 15
+abortbtn.Font = Enum.Font.FredokaOne
+abortbtn.Parent = header
+
+local abortStroke = Instance.new("UIStroke")
+abortStroke.Transparency = 0.4
+abortStroke.Color = Color3.new(0, 0, 0)
+abortStroke.Thickness = 1.5
+abortStroke.Parent = abortbtn
+
+local contentcontainer = Instance.new("Frame")
+contentcontainer.Size = UDim2.new(1, -16, 1, -38)
+contentcontainer.Position = UDim2.fromOffset(8, 30)
+contentcontainer.BackgroundTransparency = 1
+contentcontainer.Parent = mainframe
+
+local listlayout = Instance.new("UIListLayout")
+listlayout.SortOrder = Enum.SortOrder.LayoutOrder
+listlayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+listlayout.Padding = UDim.new(0, 4)
+listlayout.Parent = contentcontainer
+
+local function createTextStroke(object, transparency)
+    local stroke = Instance.new("UIStroke")
+    stroke.Transparency = transparency or 0.4
+    stroke.Color = Color3.new(0, 0, 0)
+    stroke.Thickness = 1.5
+    stroke.Parent = object
+    return stroke
+end
+
+local function createRow(layoutOrder, defaultText)
+    local box = Instance.new("Frame")
+    box.Size = UDim2.new(1, 0, 0, 26)
+    box.BackgroundColor3 = Color3.new(0, 0, 0)
+    box.BackgroundTransparency = 0.8
+    box.BorderSizePixel = 0
+    box.LayoutOrder = layoutOrder
+    box.Parent = contentcontainer
+
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 4)
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(65, 65, 65)
+    stroke.Transparency = 0.3
+    stroke.Parent = box
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -16, 1, 0)
+    label.Position = UDim2.fromOffset(8, 0)
+    label.BackgroundTransparency = 1
+    label.Text = defaultText
+    label.TextColor3 = Color3.new(1, 1, 1)
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Font = Enum.Font.FredokaOne
+    label.Parent = box
+
+    createTextStroke(label)
+
+    return label
+end
+
+local function createSectionHeader(layoutOrder, text, color)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 0, 18)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = color
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.Font = Enum.Font.FredokaOne
+    label.LayoutOrder = layoutOrder
+    label.Visible = false
+    label.Parent = contentcontainer
+
+    createTextStroke(label)
+
+    return label
+end
+
+local function createDoubleEntityRow(layoutOrder)
+    local box = Instance.new("Frame")
+    box.Size = UDim2.new(1, 0, 0, 52)
+    box.BackgroundColor3 = Color3.new(0, 0, 0)
+    box.BackgroundTransparency = 0.8
+    box.BorderSizePixel = 0
+    box.LayoutOrder = layoutOrder
+    box.Visible = false
+    box.Parent = contentcontainer
+
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 4)
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(65, 65, 65)
+    stroke.Transparency = 0.3
+    stroke.Parent = box
+
+    local icon = Instance.new("ImageLabel")
+    icon.Size = UDim2.fromOffset(36, 36)
+    icon.Position = UDim2.new(0, 8, 0.5, -18)
+    icon.BackgroundTransparency = 1
+    icon.Parent = box
+
+    Instance.new("UICorner", icon).CornerRadius = UDim.new(0.2, 0)
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(1, -56, 0, 22)
+    nameLabel.Position = UDim2.fromOffset(52, 4)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.TextColor3 = Color3.new(1, 1, 1)
+    nameLabel.TextSize = 14
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.Font = Enum.Font.FredokaOne
+    nameLabel.Parent = box
+
+    createTextStroke(nameLabel)
+
+    local distLabel = Instance.new("TextLabel")
+    distLabel.Size = UDim2.new(1, -56, 0, 22)
+    distLabel.Position = UDim2.fromOffset(52, 24)
+    distLabel.BackgroundTransparency = 1
+    distLabel.TextColor3 = Color3.new(1, 1, 1)
+    distLabel.TextSize = 14
+    distLabel.TextXAlignment = Enum.TextXAlignment.Left
+    distLabel.Font = Enum.Font.FredokaOne
+    distLabel.Parent = box
+
+    createTextStroke(distLabel)
+
+    return box, nameLabel, distLabel, icon
+end
+
+-- ======================== FARM TOGGLE ========================
+local farmcard = Instance.new("Frame")
+farmcard.Size = UDim2.new(1, 0, 0, 26)
+farmcard.BackgroundColor3 = Color3.new(0, 0, 0)
+farmcard.BackgroundTransparency = 0.8
+farmcard.BorderSizePixel = 0
+farmcard.LayoutOrder = 1
+farmcard.Parent = contentcontainer
+
+Instance.new("UICorner", farmcard).CornerRadius = UDim.new(0, 4)
+
+local farmstroke = Instance.new("UIStroke")
+farmstroke.Color = Color3.fromRGB(65, 65, 65)
+farmstroke.Transparency = 0.3
+farmstroke.Parent = farmcard
+
+local farmlabel = Instance.new("TextLabel")
+farmlabel.Size = UDim2.new(0.6, 0, 1, 0)
+farmlabel.Position = UDim2.fromOffset(8, 0)
+farmlabel.BackgroundTransparency = 1
+farmlabel.Text = "auto farm"
+farmlabel.TextColor3 = Color3.new(1, 1, 1)
+farmlabel.TextSize = 14
+farmlabel.TextXAlignment = Enum.TextXAlignment.Left
+farmlabel.Font = Enum.Font.FredokaOne
+farmlabel.Parent = farmcard
+
+createTextStroke(farmlabel)
+
+local farmbg = Instance.new("Frame")
+farmbg.Size = UDim2.fromOffset(36, 16)
+farmbg.Position = UDim2.new(1, -42, 0.5, -8)
+farmbg.BackgroundColor3 = Color3.new(0, 0, 0)
+farmbg.BackgroundTransparency = 0.6
+farmbg.BorderSizePixel = 0
+farmbg.Parent = farmcard
+
+Instance.new("UICorner", farmbg).CornerRadius = UDim.new(1, 0)
+
+local togglestroke = Instance.new("UIStroke")
+togglestroke.Color = Color3.fromRGB(65, 65, 65)
+togglestroke.Transparency = 0.3
+togglestroke.Parent = farmbg
+
+local farmknob = Instance.new("Frame")
+farmknob.Size = UDim2.fromOffset(12, 12)
+farmknob.Position = UDim2.new(0, 2, 0.5, -6)
+farmknob.BackgroundColor3 = Color3.new(1, 1, 1)
+farmknob.BackgroundTransparency = 0.2
+farmknob.BorderSizePixel = 0
+farmknob.Parent = farmbg
+
+Instance.new("UICorner", farmknob).CornerRadius = UDim.new(1, 0)
+
+local farmclick = Instance.new("TextButton")
+farmclick.Size = UDim2.new(1, 0, 1, 0)
+farmclick.BackgroundTransparency = 1
+farmclick.Text = ""
+farmclick.Parent = farmcard
+
+-- ======================== AUTO RESET TOGGLE ========================
+local resetcard = Instance.new("Frame")
+resetcard.Size = UDim2.new(1, 0, 0, 26)
+resetcard.BackgroundColor3 = Color3.new(0, 0, 0)
+resetcard.BackgroundTransparency = 0.8
+resetcard.BorderSizePixel = 0
+resetcard.LayoutOrder = 2
+resetcard.Parent = contentcontainer
+
+Instance.new("UICorner", resetcard).CornerRadius = UDim.new(0, 4)
+
+local resetstroke = Instance.new("UIStroke")
+resetstroke.Color = Color3.fromRGB(65, 65, 65)
+resetstroke.Transparency = 0.3
+resetstroke.Parent = resetcard
+
+local resetlabel = Instance.new("TextLabel")
+resetlabel.Size = UDim2.new(0.6, 0, 1, 0)
+resetlabel.Position = UDim2.fromOffset(8, 0)
+resetlabel.BackgroundTransparency = 1
+resetlabel.Text = "auto reset"
+resetlabel.TextColor3 = Color3.new(1, 1, 1)
+resetlabel.TextSize = 14
+resetlabel.TextXAlignment = Enum.TextXAlignment.Left
+resetlabel.Font = Enum.Font.FredokaOne
+resetlabel.Parent = resetcard
+
+createTextStroke(resetlabel)
+
+local resetbg = Instance.new("Frame")
+resetbg.Size = UDim2.fromOffset(36, 16)
+resetbg.Position = UDim2.new(1, -42, 0.5, -8)
+resetbg.BackgroundColor3 = Color3.new(0, 0, 0)
+resetbg.BackgroundTransparency = 0.6
+resetbg.BorderSizePixel = 0
+resetbg.Parent = resetcard
+
+Instance.new("UICorner", resetbg).CornerRadius = UDim.new(1, 0)
+
+local resetbggstroke = Instance.new("UIStroke")
+resetbggstroke.Color = Color3.fromRGB(65, 65, 65)
+resetbggstroke.Transparency = 0.3
+resetbggstroke.Parent = resetbg
+
+local resetknob = Instance.new("Frame")
+resetknob.Size = UDim2.fromOffset(12, 12)
+resetknob.Position = UDim2.new(0, 2, 0.5, -6)
+resetknob.BackgroundColor3 = Color3.new(1, 1, 1)
+resetknob.BackgroundTransparency = 0.2
+resetknob.BorderSizePixel = 0
+resetknob.Parent = resetbg
+
+Instance.new("UICorner", resetknob).CornerRadius = UDim.new(1, 0)
+
+local resetclick = Instance.new("TextButton")
+resetclick.Size = UDim2.new(1, 0, 1, 0)
+resetclick.BackgroundTransparency = 1
+resetclick.Text = ""
+resetclick.Parent = resetcard
+
+local roundstatus = createRow(3, "status: disabled")
+local roundslabel = createRow(4, "rounds played: 0")
+local sessionlabel = createRow(5, "session time: 0s")
+
+local murdHeader = createSectionHeader(6, "murderer", COLORS.Knife)
+local murdBox, murdNameLabel, murdDistLabel, murdIcon =
+    createDoubleEntityRow(7)
+
+local sherHeader = createSectionHeader(8, "sheriff", COLORS.Gun)
+local sherBox, sherNameLabel, sherDistLabel, sherIcon =
+    createDoubleEntityRow(9)
+
+local heroHeader = createSectionHeader(10, "hero", COLORS.Hero)
+local heroBox, heroNameLabel, heroDistLabel, heroIcon =
+    createDoubleEntityRow(11)
+
+-- ======================== STATUS / GUI SIZE ========================
+local function setstatus(text, color)
+    if currentstatustext ~= text then
+        if text == "waiting for coins" then
+            searchingCoinsStartTime = tick()
+        else
+            searchingCoinsStartTime = 0
+        end
+    end
+
+    currentstatustext = text
+    currentstatuscolor = color
+
+    roundstatus.Text = "status: " .. text
+    roundstatus.TextColor3 = color
+end
+
+local function settogglestate(state)
+    local info = TweenInfo.new(
+        0.2,
+        Enum.EasingStyle.Quad,
+        Enum.EasingDirection.Out
+    )
+
+    tweenservice:Create(farmknob, info, {
+        Position = state
+            and UDim2.new(1, -14, 0.5, -6)
+            or UDim2.new(0, 2, 0.5, -6),
+        BackgroundTransparency = state and 0 or 0.3,
+    }):Play()
+
+    tweenservice:Create(farmbg, info, {
+        BackgroundTransparency = state and 0.3 or 0.6,
+        BackgroundColor3 = state
+            and Color3.fromRGB(20, 20, 20)
+            or Color3.new(0, 0, 0),
+    }):Play()
+end
+
+local function setresettogglestate(state)
+    local info = TweenInfo.new(
+        0.2,
+        Enum.EasingStyle.Quad,
+        Enum.EasingDirection.Out
+    )
+
+    tweenservice:Create(resetknob, info, {
+        Position = state
+            and UDim2.new(1, -14, 0.5, -6)
+            or UDim2.new(0, 2, 0.5, -6),
+        BackgroundTransparency = state and 0 or 0.3,
+    }):Play()
+
+    tweenservice:Create(resetbg, info, {
+        BackgroundTransparency = state and 0.3 or 0.6,
+        BackgroundColor3 = state
+            and Color3.fromRGB(20, 20, 20)
+            or Color3.new(0, 0, 0),
+    }):Play()
+end
+
+local function formattime(seconds)
+    local hrs = math.floor(seconds / 3600)
+    local mins = math.floor((seconds % 3600) / 60)
+    local secs = math.floor(seconds % 60)
+
+    if hrs > 0 then
+        return string.format("%dh %dm %ds", hrs, mins, secs)
+    elseif mins > 0 then
+        return string.format("%dm %ds", mins, secs)
+    end
+
+    return string.format("%ds", secs)
+end
+
+local lastGuiWidth
+local lastGuiHeight
+local resizeTween
+
+local function updateGuiSizeAndWidth(murdName, sherName, heroName)
+    local maxTextWidth = 0
+
+    for _, name in ipairs({murdName, sherName, heroName}) do
+        if name then
+            maxTextWidth = math.max(
+                maxTextWidth,
+                textservice:GetTextSize(
+                    name,
+                    14,
+                    Enum.Font.FredokaOne,
+                    Vector2.new(1000, 22)
+                ).X
+            )
+        end
+    end
+
+    local calculatedWidth = math.max(MIN_WIDTH, maxTextWidth + 85)
+    local targetHeight = BASE_HEIGHT
+
+    if murdName then targetHeight += 78 end
+    if sherName then targetHeight += 78 end
+    if heroName then targetHeight += 78 end
+
+    if calculatedWidth == lastGuiWidth and targetHeight == lastGuiHeight then
+        return
+    end
+
+    lastGuiWidth = calculatedWidth
+    lastGuiHeight = targetHeight
+
+    if resizeTween then
+        resizeTween:Cancel()
+    end
+
+    resizeTween = tweenservice:Create(
+        mainframe,
+        TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        {Size = UDim2.fromOffset(calculatedWidth, targetHeight)}
+    )
+
+    resizeTween:Play()
+end
+
+-- ======================== ROLE DETECTION ========================
+local function scanContainerForRole(container)
+    if not container then
+        return nil, COLORS.Default
+    end
+
+    for _, item in ipairs(container:GetChildren()) do
+        if item:IsA("Tool") then
+            local name = string.lower(item.Name)
+
+            if name:find("knife", 1, true)
+                or name:find("blade", 1, true) then
+                return "Murderer", COLORS.Knife
+            end
+
+            if name:find("gun", 1, true)
+                or name:find("revolver", 1, true) then
+                if sheriffDiedThisRound then
+                    return "Hero", COLORS.Hero
+                end
+
+                return "Sheriff", COLORS.Gun
+            end
+        end
+    end
+
+    return nil, COLORS.Default
+end
+
+local function getPlayerRoleAndColor(plr)
+    if not plr then
+        return nil, COLORS.Default
+    end
+
+    local char = plr.Character
+
+    if char then
+        local role, color = scanContainerForRole(char)
+
+        if role then
+            return role, color
+        end
+    end
+
+    local backpack = plr:FindFirstChildOfClass("Backpack")
+
+    if backpack then
+        local role, color = scanContainerForRole(backpack)
+
+        if role then
+            return role, color
+        end
+    end
+
+    return nil, COLORS.Default
+end
+
+-- ======================== GUN DROP POSITION HELPERS ========================
+local function getWorldPosition(obj)
+    if not obj or not obj.Parent then
+        return nil
+    end
+
+    if obj:IsA("BasePart") then
+        return obj.Position
+    end
+
+    if obj:IsA("Model") then
+        local success, pivot = pcall(function()
+            return obj:GetPivot()
+        end)
+
+        if success then
+            return pivot.Position
+        end
+    end
+
+    return nil
+end
+
+local function findNearbyDeath(gunPosition)
+    if not gunPosition then
+        return nil
+    end
+
+    local closestUserId = nil
+    local closestDistance = GUN_DEATH_RADIUS
+
+    for userId, deathPosition in pairs(recordedGunDeathPositions) do
+        local distance = (gunPosition - deathPosition).Magnitude
+
+        if distance <= closestDistance then
+            closestDistance = distance
+            closestUserId = userId
+        end
+    end
+
+    return closestUserId
+end
+
+-- ======================== PLAYER / GUN CHAMS ========================
+local function createChams(plr)
+    if not scriptrunning or not plr or plr == localplayer then
+        return
+    end
+
+    local char = plr.Character
+
+    if not char or not char.Parent then
+        return
+    end
+
+    local _, roleColor = getPlayerRoleAndColor(plr)
+    local highlightColor = roleColor or COLORS.Default
+    local highlight = chams[plr]
+
+    if not highlight or not highlight.Parent then
+        highlight = Instance.new("Highlight")
+        highlight.Name = "MM2EspHighlight"
+        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        highlight.FillTransparency = 0.8
+        highlight.OutlineTransparency = 0.2
+        chams[plr] = highlight
+    end
+
+    highlight.Adornee = char
+    highlight.FillColor = highlightColor
+    highlight.OutlineColor = getOutlineColor(highlightColor)
+    highlight.Enabled = chamEnabled
+    highlight.Parent = hiddenUI
+end
+
+local function removeChams(plr)
+    local highlight = chams[plr]
+
+    if highlight then
+        pcall(function()
+            highlight:Destroy()
+        end)
+
+        chams[plr] = nil
+    end
+end
+
+local function createGunCham(obj)
+    if not scriptrunning or not obj or droppedGunChams[obj] then
+        return
+    end
+
+    if obj.Name ~= "GunDrop"
+        and not (obj:IsA("BasePart") and obj.Name == "Gun") then
+        return
+    end
+
+    local gunPosition = getWorldPosition(obj)
+
+    if not gunPosition then
+        return
+    end
+
+    -- No sheriff/hero death position means no gun-drop highlight.
+    local matchedUserId = findNearbyDeath(gunPosition)
+
+    if not matchedUserId then
+        return
+    end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "MM2GunHighlight"
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.FillColor = COLORS.Gun
+    highlight.OutlineColor = getOutlineColor(COLORS.Gun)
+    highlight.FillTransparency = 0.8
+    highlight.OutlineTransparency = 0.2
+    highlight.Enabled = chamEnabled
+    highlight.Adornee = obj
+    highlight.Parent = hiddenUI
+
+    droppedGunChams[obj] = {
+        Highlight = highlight,
+        DeathUserId = matchedUserId,
+    }
+end
+
+local function refreshGunChamsNearDeath(userId)
+    local deathPosition = recordedGunDeathPositions[userId]
+
+    if not deathPosition then
+        return
+    end
+
+    -- Check existing highlights against the newly recorded death position.
+    for obj, data in pairs(droppedGunChams) do
+        local position = getWorldPosition(obj)
+
+        if not position
+            or (position - deathPosition).Magnitude > GUN_DEATH_RADIUS then
+            destroyGunCham(obj)
+        end
+    end
+
+    -- Find drops that appeared before the death event.
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj.Name == "GunDrop"
+            or (obj:IsA("BasePart") and obj.Name == "Gun") then
+            createGunCham(obj)
+        end
+    end
+end
+
+-- ======================== SHERIFF / HERO DEATH TRACKING ========================
+local function setupRoleDeathTracking(plr)
+    if plr == localplayer then
+        return
+    end
+
+    local function attach(character)
+        task.spawn(function()
+            local humanoid = character:WaitForChild("Humanoid", 5)
+
+            if not humanoid or not scriptrunning then
+                return
+            end
+
+            addConnection(humanoid.Died:Connect(function()
+                if not scriptrunning or not isgameactive then
+                    return
+                end
+
+                local role = previousRoles[plr]
+
+                if role ~= "Sheriff"
+                    and role ~= "Hero"
+                    and currentSheriffUserId ~= plr.UserId then
+                    return
+                end
+
+                -- Capture the death position immediately.
+                local root = character:FindFirstChild("HumanoidRootPart")
+                local deathPosition = root and root.Position
+
+                if not deathPosition then
+                    deathPosition = getWorldPosition(character)
+                end
+
+                if deathPosition then
+                    recordedGunDeathPositions[plr.UserId] = deathPosition
+                    refreshGunChamsNearDeath(plr.UserId)
+                end
+
+                if role == "Sheriff"
+                    or currentSheriffUserId == plr.UserId then
+                    sheriffDiedThisRound = true
+                end
+            end))
+        end)
+    end
+
+    addConnection(plr.CharacterAdded:Connect(attach))
+
+    if plr.Character then
+        attach(plr.Character)
+    end
+end
+
+local function setupPlayer(plr)
+    if plr == localplayer then
+        return
+    end
+
+    setupRoleDeathTracking(plr)
+
+    addConnection(plr.CharacterAdded:Connect(function(character)
+        task.spawn(function()
+            character:WaitForChild("Humanoid", 5)
+
+            if scriptrunning
+                and plr.Parent == players
+                and plr.Character == character then
+                createChams(plr)
+            end
+        end)
+    end))
+
+    if plr.Character then
+        createChams(plr)
+    end
+end
+
+for _, plr in ipairs(players:GetPlayers()) do
+    setupPlayer(plr)
+end
+
+addConnection(players.PlayerAdded:Connect(setupPlayer))
+
+addConnection(players.PlayerRemoving:Connect(function(plr)
+    removeChams(plr)
+    previousRoles[plr] = nil
+end))
+
+-- Gun drops are checked when added to Workspace.
+addConnection(workspace.DescendantAdded:Connect(function(obj)
+    if currentmap and obj:IsDescendantOf(currentmap) then
+        addCoin(obj)
+    end
+
+    if obj.Name == "GunDrop"
+        or (obj:IsA("BasePart") and obj.Name == "Gun") then
+        task.defer(function()
+            if scriptrunning then
+                createGunCham(obj)
+            end
+        end)
+    end
+end))
+
+addConnection(workspace.DescendantRemoving:Connect(function(obj)
+    if obj == currenttargetcoin then
+        stopmovement()
+    end
+
+    removeCoin(obj)
+    destroyGunCham(obj)
+end))
+
+-- Repair highlights without recreating healthy instances.
+task.spawn(function()
+    while scriptrunning do
+        task.wait(CHAM_REPAIR_INTERVAL)
+
+        if not scriptrunning then
+            break
+        end
+
+        for _, plr in ipairs(players:GetPlayers()) do
+            if plr ~= localplayer then
+                local character = plr.Character
+
+                if character and character.Parent then
+                    local highlight = chams[plr]
+
+                    if not highlight or not highlight.Parent
+                        or highlight.Adornee ~= character then
+                        createChams(plr)
+                    else
+                        local _, color = getPlayerRoleAndColor(plr)
+                        color = color or COLORS.Default
+
+                        if highlight.FillColor ~= color then
+                            highlight.FillColor = color
+                        end
+
+                        local outline = getOutlineColor(color)
+
+                        if highlight.OutlineColor ~= outline then
+                            highlight.OutlineColor = outline
+                        end
+
+                        if highlight.Enabled ~= chamEnabled then
+                            highlight.Enabled = chamEnabled
+                        end
+
+                        if highlight.Parent ~= hiddenUI then
+                            highlight.Parent = hiddenUI
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Remove gun highlights if their drop moves outside the death radius.
+        for obj, data in pairs(droppedGunChams) do
+            local position = getWorldPosition(obj)
+            local deathPosition = data.DeathUserId
+                and recordedGunDeathPositions[data.DeathUserId]
+
+            if not position or not deathPosition
+                or (position - deathPosition).Magnitude > GUN_DEATH_RADIUS then
+                destroyGunCham(obj)
+            elseif not data.Highlight or not data.Highlight.Parent then
+                destroyGunCham(obj)
+                createGunCham(obj)
+            elseif data.Highlight.Enabled ~= chamEnabled then
+                data.Highlight.Enabled = chamEnabled
+            end
+        end
+    end
+end)
+
+-- ======================== AVATAR IMAGES ========================
+local function updateAvatarImage(imageLabel, userId)
+    if not userId then
+        imageLabel.Image = ""
+        return
+    end
+
+    task.spawn(function()
+        local success, content = pcall(function()
+            local image, isLoaded = players:GetUserThumbnailAsync(
+                userId,
+                Enum.ThumbnailType.HeadShot,
+                Enum.ThumbnailSize.Size100x100
+            )
+
+            return isLoaded and image or ""
+        end)
+
+        if success and content and content ~= "" and imageLabel.Parent then
+            imageLabel.Image = content
+        end
+    end)
+end
+
+-- ======================== MAP / ROUND LOGIC ========================
+local function checkworkspaceformap()
+    for _, child in ipairs(workspace:GetChildren()) do
+        if child:IsA("Model") and child.Name ~= "Lobby" then
+            if child:FindFirstChild("CoinContainer")
+                or child:FindFirstChild("Spawns")
+                or child:FindFirstChild("CoinServer") then
+                return child
+            end
+        end
+    end
+
+    return nil
+end
+
+local updateroundstatus
+
+updateroundstatus = function()
+    if not scriptrunning or ischeckingmap then
+        return
+    end
+
+    local detectedmap = checkworkspaceformap()
+
+    if not detectedmap then
+        roundgeneration += 1
+        isgameactive = false
+        waitingfornextround = false
+        preptimeremaining = 0
+
+        sheriffDiedThisRound = false
+        currentSheriffUserId = nil
+        table.clear(previousRoles)
+        table.clear(recordedGunDeathPositions)
+        clearGunChams()
+
+        stopmovement()
+        setnoclip(false)
+
+        currentmap = nil
+        table.clear(activecoins)
+        table.clear(activecoinset)
+        hascountedcurrentround = false
+
+        if autofarmcoins then
+            setstatus("intermission", Color3.fromRGB(235, 180, 50))
+        else
+            setstatus("disabled", Color3.new(1, 1, 1))
+        end
+
+        return
+    end
+
+    if detectedmap == currentmap then
+        return
+    end
+
+    currentmap = detectedmap
+    roundgeneration += 1
+
+    local thisgeneration = roundgeneration
+
+    isgameactive = false
+    waitingfornextround = false
+    sheriffDiedThisRound = false
+    currentSheriffUserId = nil
+
+    table.clear(previousRoles)
+    table.clear(recordedGunDeathPositions)
+    clearGunChams()
+
+    stopmovement()
+    setnoclip(false)
+
+    table.clear(activecoins)
+    table.clear(activecoinset)
+    hascountedcurrentround = false
+
+    if autofarmcoins then
+        preptimeremaining = ROUND_START_DELAY
+
+        setstatus(
+            "preparing (" .. preptimeremaining .. "s)",
+            Color3.fromRGB(235, 180, 50)
+        )
+    else
+        preptimeremaining = 0
+    end
+
+    task.spawn(function()
+        while scriptrunning
+            and thisgeneration == roundgeneration
+            and currentmap == detectedmap
+            and preptimeremaining > 0 do
+
+            task.wait(1)
+
+            if not scriptrunning or thisgeneration ~= roundgeneration then
+                return
+            end
+
+            if preptimeremaining > 0
+                and currentstatustext:find("preparing", 1, true) then
+                preptimeremaining -= 1
+
+                roundstatus.Text =
+                    "status: preparing (" .. preptimeremaining .. "s)"
+            end
+        end
+
+        if not scriptrunning or thisgeneration ~= roundgeneration then
+            return
+        end
+
+        if currentmap ~= detectedmap
+            or checkworkspaceformap() ~= detectedmap then
+            return
+        end
+
+        local character = localplayer.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+        if not humanoid or humanoid.Health <= 0 then
+            return
+        end
+
+        isgameactive = true
+        roundActiveStartTime = tick()
+
+        if not hascountedcurrentround then
+            roundsplayedcount += 1
+            roundslabel.Text = "rounds played: " .. roundsplayedcount
+            hascountedcurrentround = true
+        end
+
+        if autofarmcoins and not waitingfornextround then
+            refreshcoins()
+            setnoclip(true)
+
+            setstatus("collecting coins", Color3.fromRGB(100, 220, 120))
+        end
+    end)
+end
+
+local function waitformaptoload()
+    if ischeckingmap then
+        return
+    end
+
+    ischeckingmap = true
+
+    task.spawn(function()
+        for _ = 1, 10 do
+            if not scriptrunning or checkworkspaceformap() then
+                break
+            end
+
+            task.wait(0.5)
+        end
+
+        ischeckingmap = false
+
+        if scriptrunning then
+            updateroundstatus()
+        end
+    end)
+end
+
+addConnection(workspace.ChildAdded:Connect(function(child)
+    if child:IsA("Model") and child.Name ~= "Lobby" then
+        waitformaptoload()
+    end
+end))
+
+addConnection(workspace.ChildRemoved:Connect(function(child)
+    if child == currentmap or child.Name ~= "Lobby" then
+        task.delay(0.2, function()
+            if scriptrunning then
+                updateroundstatus()
+            end
+        end)
+    end
+end))
+
+updateroundstatus()
+
+-- ======================== DEATH / RESPAWN ========================
+local function setupdeathlistener(character)
+    task.spawn(function()
+        local humanoid = character:WaitForChild("Humanoid", 5)
+
+        if not humanoid or not scriptrunning then
+            return
+        end
+
+        addConnection(humanoid.Died:Connect(function()
+            if not scriptrunning then
+                return
+            end
+
+            stopmovement()
+            setnoclip(false)
+
+            isgameactive = false
+            waitingfornextround = true
+            preptimeremaining = 0
+
+            if autofarmcoins then
+                setstatus("died", Color3.fromRGB(230, 80, 80))
+            end
+        end))
+    end)
+end
+
+if localplayer.Character then
+    setupdeathlistener(localplayer.Character)
+end
+
+addConnection(localplayer.CharacterAdded:Connect(function(character)
+    if not scriptrunning then
+        return
+    end
+
+    stopmovement()
+    table.clear(activecoins)
+    table.clear(activecoinset)
+
+    setupdeathlistener(character)
+
+    task.delay(1.5, function()
+        if scriptrunning then
+            updateroundstatus()
+        end
+    end)
+end))
+
+-- ======================== TOGGLES ========================
+addConnection(farmclick.MouseButton1Click:Connect(function()
+    autofarmcoins = not autofarmcoins
+    settogglestate(autofarmcoins)
+
+    if not autofarmcoins then
+        autoreset = false
+        setresettogglestate(false)
+        stopmovement()
+        setnoclip(false)
+        setstatus("disabled", Color3.new(1, 1, 1))
+    else
+        if isgameactive and not waitingfornextround then
+            refreshcoins()
+            setnoclip(true)
+
+            setstatus("collecting coins", Color3.fromRGB(100, 220, 120))
+        elseif not isgameactive and currentmap then
+            preptimeremaining = ROUND_START_DELAY
+
+            setstatus(
+                "preparing (" .. preptimeremaining .. "s)",
+                Color3.fromRGB(235, 180, 50)
+            )
+        elseif waitingfornextround then
+            setstatus("died", Color3.fromRGB(230, 80, 80))
+        else
+            setstatus("intermission", Color3.fromRGB(235, 180, 50))
+        end
+    end
+end))
+
+addConnection(resetclick.MouseButton1Click:Connect(function()
+    if not autofarmcoins then
+        return -- Auto reset cannot be toggled on unless auto farm is active
+    end
+
+    autoreset = not autoreset
+    setresettogglestate(autoreset)
+
+    -- Update status immediately if currently waiting because of death
+    if waitingfornextround and autofarmcoins then
+        setstatus("died", Color3.fromRGB(230, 80, 80))
+    end
+end))
+
+-- ======================== ABORT / CLEANUP ========================
+local function abortScript()
+    if not scriptrunning then
+        return
+    end
+
+    scriptrunning = false
+    autofarmcoins = false
+    autoreset = false
+
+    stopmovement()
+    setnoclip(false)
+
+    pcall(function()
+        task.cancel(antiAfkTask)
+    end)
+
+    if dragTween then
+        pcall(function()
+            dragTween:Cancel()
+        end)
+    end
+
+    if resizeTween then
+        pcall(function()
+            resizeTween:Cancel()
+        end)
+    end
+
+    for _, connection in ipairs(globalConns) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+
+    for _, highlight in pairs(chams) do
+        pcall(function()
+            highlight:Destroy()
+        end)
+    end
+
+    table.clear(chams)
+    clearGunChams()
+
+    pcall(function()
+        screengui:Destroy()
+    end)
+end
+
+addConnection(abortbtn.MouseButton1Click:Connect(abortScript))
+
+addConnection(abortbtn.MouseEnter:Connect(function()
+    tweenservice:Create(abortbtn, TweenInfo.new(0.15), {
+        TextColor3 = Color3.fromRGB(200, 50, 50),
+    }):Play()
+end))
+
+addConnection(abortbtn.MouseLeave:Connect(function()
+    tweenservice:Create(abortbtn, TweenInfo.new(0.15), {
+        TextColor3 = Color3.new(1, 1, 1),
+    }):Play()
+end))
+
+-- ======================== MAIN LOOP ========================
+task.spawn(function()
+    while scriptrunning do
+        task.wait(0.1)
+
+        if not scriptrunning then
+            break
+        end
+
+        sessionlabel.Text =
+            "session time: " .. formattime(tick() - scriptstarttime)
+
+        local character = localplayer.Character
+        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+        -- Auto Reset extra feature logic check (only runs if both autofarm and autoreset are on)
+        if autofarmcoins and autoreset and isgameactive and not waitingfornextround and hrp and humanoid and humanoid.Health > 0 then
+            local timeInRound = tick() - roundActiveStartTime
+            local searchingDuration = (searchingCoinsStartTime > 0) and (tick() - searchingCoinsStartTime) or 0
+
+            if timeInRound >= 60 and searchingDuration >= 1 and currentstatustext == "waiting for coins" then
+                local now = tick()
+                if now - lastAutoResetTick >= 0.5 then
+                    lastAutoResetTick = now
+                    hrp.CFrame = hrp.CFrame + Vector3.new(0, -500, 0)
+                end
+            end
+        end
+
+        local murdererPlayers = {}
+        local sheriffPlayers = {}
+        local heroPlayers = {}
+
+        -- Never show your own role.
+        for _, plr in ipairs(players:GetPlayers()) do
+            if plr ~= localplayer then
+                local role = getPlayerRoleAndColor(plr)
+                previousRoles[plr] = role
+
+                if role == "Murderer" then
+                    table.insert(murdererPlayers, plr)
+                elseif role == "Sheriff" then
+                    table.insert(sheriffPlayers, plr)
+                    currentSheriffUserId = plr.UserId
+                elseif role == "Hero" then
+                    table.insert(heroPlayers, plr)
+                end
+            end
+        end
+
+        local foundMurd =
+            #murdererPlayers == 1 and murdererPlayers[1] or nil
+
+        local foundSher =
+            #sheriffPlayers == 1 and sheriffPlayers[1] or nil
+
+        local foundHero =
+            #heroPlayers == 1 and heroPlayers[1] or nil
+
+        local myPos = hrp and hrp.Position or Vector3.zero
+
+        local function getDistance(plr)
+            local root = plr.Character
+                and plr.Character:FindFirstChild("HumanoidRootPart")
+
+            if root and hrp then
+                return math.floor((root.Position - myPos).Magnitude)
+            end
+
+            return 0
+        end
+
+        local function updateRoleCard(plr, headerLabel, box, nameLabel,
+            distLabel, icon, lastUserId, roleDistance)
+            headerLabel.Visible = plr ~= nil
+            box.Visible = plr ~= nil
+
+            if not plr then
+                nameLabel.Text = ""
+                distLabel.Text = ""
+
+                if lastUserId.value ~= nil then
+                    lastUserId.value = nil
+                    updateAvatarImage(icon, nil)
+                end
+
+                return
+            end
+
+            nameLabel.Text = plr.Name
+            distLabel.Text = roleDistance .. " studs"
+
+            if lastUserId.value ~= plr.UserId then
+                lastUserId.value = plr.UserId
+                updateAvatarImage(icon, plr.UserId)
+            end
+        end
+
+        local murdId = {value = lastMurdUserId}
+        local sherId = {value = lastSherUserId}
+        local heroId = {value = lastHeroUserId}
+
+        updateRoleCard(
+            foundMurd, murdHeader, murdBox, murdNameLabel,
+            murdDistLabel, murdIcon, murdId,
+            foundMurd and getDistance(foundMurd) or 0
+        )
+
+        updateRoleCard(
+            foundSher, sherHeader, sherBox, sherNameLabel,
+            sherDistLabel, sherIcon, sherId,
+            foundSher and getDistance(foundSher) or 0
+        )
+
+        updateRoleCard(
+            foundHero, heroHeader, heroBox, heroNameLabel,
+            heroDistLabel, heroIcon, heroId,
+            foundHero and getDistance(foundHero) or 0
+        )
+
+        lastMurdUserId = murdId.value
+        lastSherUserId = sherId.value
+        lastHeroUserId = heroId.value
+
+        updateGuiSizeAndWidth(
+            foundMurd and foundMurd.Name,
+            foundSher and foundSher.Name,
+            foundHero and foundHero.Name
+        )
+
+        -- ======================== SAFE COIN TARGETING ========================
+        if hrp and humanoid and humanoid.Health > 0
+            and isgameactive
+            and not waitingfornextround
+            and autofarmcoins then
+
+            local function isSafeCoinTarget(coin)
+                if not coin
+                    or not coin.Parent
+                    or not coin:IsA("BasePart")
+                    or coin.Transparency >= 1
+                    or not currentmap
+                    or not coin:IsDescendantOf(currentmap) then
+                    return false
+                end
+
+                for _, murderer in ipairs(murdererPlayers) do
+                    local murdererRoot = murderer.Character
+                        and murderer.Character:FindFirstChild("HumanoidRootPart")
+
+                    if murdererRoot
+                        and (murdererRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
+                        return false
+                    end
+                end
+
+                return true
+            end
+
+            if currenttargetcoin and not isSafeCoinTarget(currenttargetcoin) then
+                stopmovement()
+            end
+
+            if not istweening then
+                local nearestcoin
+                local shortestdist = math.huge
+
+                for i = #activecoins, 1, -1 do
+                    local coin = activecoins[i]
+
+                    if not isSafeCoinTarget(coin) then
+                        if coin then
+                            activecoinset[coin] = nil
+                        end
+
+                        table.remove(activecoins, i)
+                    else
+                        local distance = (coin.Position - hrp.Position).Magnitude
+
+                        if distance < shortestdist then
+                            shortestdist = distance
+                            nearestcoin = coin
+                        end
+                    end
+                end
+
+                if nearestcoin then
+                    istweening = true
+                    currenttargetcoin = nearestcoin
+
+                    removeTargetHighlight()
+
+                    targethighlight = Instance.new("Highlight")
+                    targethighlight.Name = "CurrentCoinHighlight"
+                    targethighlight.Adornee = nearestcoin
+                    targethighlight.FillColor = COLORS.Default
+                    targethighlight.FillTransparency = 0.8
+                    targethighlight.OutlineColor = getOutlineColor(COLORS.Default)
+                    targethighlight.OutlineTransparency = 0.2
+                    targethighlight.Parent = hiddenUI
+
+                    setstatus("collecting coins", Color3.fromRGB(100, 220, 120))
+
+                    local distance = (nearestcoin.Position - hrp.Position).Magnitude
+                    local travelTime = math.max(distance / COIN_TRAVEL_SPEED, 0.05)
+
+                    local tween = tweenservice:Create(
+                        hrp,
+                        TweenInfo.new(
+                            travelTime,
+                            Enum.EasingStyle.Linear,
+                            Enum.EasingDirection.InOut
+                        ),
+                        {CFrame = CFrame.new(nearestcoin.Position)}
+                    )
+
+                    activetween = tween
+
+                    addConnection(tween.Completed:Connect(function(playbackState)
+                        if activetween ~= tween then
+                            return
+                        end
+
+                        if playbackState == Enum.PlaybackState.Completed then
+                            removeCoin(nearestcoin)
+
+                            for i = #activecoins, 1, -1 do
+                                if activecoins[i] == nearestcoin then
+                                    table.remove(activecoins, i)
+                                    break
+                                end
+                            end
+                        end
+
+                        istweening = false
+                        activetween = nil
+                        currenttargetcoin = nil
+                        removeTargetHighlight()
+                    end))
+
+                    tween:Play()
+                else
+                    setstatus("waiting for coins", Color3.fromRGB(235, 180, 50))
+
+                    local now = os.clock()
+
+                    if now >= nextCoinRefresh then
+                        refreshcoins()
+                        nextCoinRefresh = now + COIN_REFRESH_INTERVAL
+                    end
+
+                    if #activecoins == 0 then
+                        task.wait(EMPTY_SEARCH_WAIT)
+                    end
+                end
+            end
+        end
+    end
+end)
