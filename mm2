@@ -1550,7 +1550,7 @@ task.spawn(function()
             local timeInRound = tick() - roundActiveStartTime
             local searchingDuration = (searchingCoinsStartTime > 0) and (tick() - searchingCoinsStartTime) or 0
 
-            if timeInRound >= 60 and searchingDuration >= 1 and currentstatustext == "waiting for coins" then
+            if timeInRound >= 45 and searchingDuration >= 1 and currentstatustext == "waiting for coins" then
                 local now = tick()
                 if now - lastAutoResetTick >= 0.5 then
                     lastAutoResetTick = now
@@ -1676,13 +1676,41 @@ task.spawn(function()
                     return false
                 end
 
-                for _, murderer in ipairs(murdererPlayers) do
-                    local murdererRoot = murderer.Character
-                        and murderer.Character:FindFirstChild("HumanoidRootPart")
+                -- Check if we are holding a knife (meaning we are the Murderer)
+                local myRole, _ = getPlayerRoleAndColor(localplayer)
+                local isMyRoleMurderer = (myRole == "Murderer")
 
-                    if murdererRoot
-                        and (murdererRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
-                        return false
+                -- If we are the Murderer, avoid Sheriff and Hero
+                if isMyRoleMurderer then
+                    for _, sheriff in ipairs(sheriffPlayers) do
+                        local sheriffRoot = sheriff.Character
+                            and sheriff.Character:FindFirstChild("HumanoidRootPart")
+
+                        if sheriffRoot
+                            and (sheriffRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
+                            return false
+                        end
+                    end
+
+                    for _, hero in ipairs(heroPlayers) do
+                        local heroRoot = hero.Character
+                            and hero.Character:FindFirstChild("HumanoidRootPart")
+
+                        if heroRoot
+                            and (heroRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
+                            return false
+                        end
+                    end
+                else
+                    -- Otherwise (Innocent/Sheriff), avoid the Murderer
+                    for _, murderer in ipairs(murdererPlayers) do
+                        local murdererRoot = murderer.Character
+                            and murderer.Character:FindFirstChild("HumanoidRootPart")
+
+                        if murdererRoot
+                            and (murdererRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
+                            return false
+                        end
                     end
                 end
 
