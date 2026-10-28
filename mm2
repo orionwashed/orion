@@ -31,14 +31,14 @@ local chamEnabled = true
 local MIN_WIDTH = 220
 local BASE_HEIGHT = 184
 local ROUND_START_DELAY = 25
-local SAFE_RADIUS = 15
+local SAFE_RADIUS = 20
 local CHAM_REPAIR_INTERVAL = 0.75
 
 local COIN_REFRESH_INTERVAL = 2
 local EMPTY_SEARCH_WAIT = 0.15
 local COIN_TRAVEL_SPEED = 21
 
-local GUN_DEATH_RADIUS = 15
+local GUN_DEATH_RADIUS = 20
 
 local COLORS = {
     Gun = Color3.fromRGB(0, 126, 245),
@@ -1550,7 +1550,7 @@ task.spawn(function()
             local timeInRound = tick() - roundActiveStartTime
             local searchingDuration = (searchingCoinsStartTime > 0) and (tick() - searchingCoinsStartTime) or 0
 
-            if timeInRound >= 45 and searchingDuration >= 1 and currentstatustext == "waiting for coins" then
+            if timeInRound >= 30 and searchingDuration >= 1 and currentstatustext == "waiting for coins" then
                 local now = tick()
                 if now - lastAutoResetTick >= 0.5 then
                     lastAutoResetTick = now
