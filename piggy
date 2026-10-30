@@ -1,0 +1,1104 @@
+local players = game:GetService("Players")
+local workspace = game:GetService("Workspace")
+local tweenservice = game:GetService("TweenService")
+local virtualuser = game:GetService("VirtualUser")
+local textservice = game:GetService("TextService")
+local inputservice = game:GetService("UserInputService")
+local lighting = game:GetService("Lighting")
+
+local localplayer = players.LocalPlayer
+local mouse = localplayer:GetMouse()
+
+-- ======================== GUI PARENT ========================
+local genv = (getgenv and getgenv()) or _G
+local safeGetHui = genv.gethui
+local safeSyn = genv.syn
+
+local hiddenUI = (safeGetHui and safeGetHui())
+    or (safeSyn and safeSyn.protect_gui and (function()
+        local folder = Instance.new("Folder")
+        safeSyn.protect_gui(folder)
+        folder.Parent = localplayer:WaitForChild("PlayerGui")
+        return folder
+    end)())
+    or game:GetService("CoreGui")
+
+-- ======================== SETTINGS ========================
+local scriptrunning = true
+local chamEnabled = false
+local noclipEnabled = false
+local fullbrightEnabled = false
+local ctrlTpEnabled = false
+
+local MIN_WIDTH = 260
+local BASE_HEIGHT = 160
+
+local COLORS = {
+    Piggy = Color3.fromRGB(245, 0, 8),
+    Traitor = Color3.fromRGB(255, 140, 0),
+    Player = Color3.fromRGB(255, 255, 255),
+    ItemsHeader = Color3.fromRGB(255, 255, 255),
+    DefaultItem = Color3.fromRGB(255, 255, 255),
+}
+
+local function getOutlineColor(color)
+    return Color3.new(math.clamp(color.R * 0.4, 0, 1), math.clamp(color.G * 0.4, 0, 1), math.clamp(color.B * 0.4, 0, 1))
+end
+
+-- ======================== STATE ========================
+local highlights = {}
+local itemEntries = {}
+local itemDistanceLabels = {}
+local itemConnections = {}
+
+local entityEntries = {}
+local entityDistanceLabels = {}
+local entityConnections = {}
+local entityViewports = {}
+local botPositions = {}
+
+local globalConns = {}
+local originalCollision = {}
+local savedCFrames = {nil, nil}
+
+local lastGuiWidth = 0
+local lastGuiHeight = 0
+local resizeTween
+
+local originalLighting = {
+    Brightness = lighting.Brightness,
+    ClockTime = lighting.ClockTime,
+    FogEnd = lighting.FogEnd,
+    GlobalShadows = lighting.GlobalShadows,
+    OutdoorAmbient = lighting.OutdoorAmbient
+}
+
+local function addConnection(connection)
+    table.insert(globalConns, connection)
+    return connection
+end
+
+-- ======================== ANTI-AFK ========================
+task.spawn(function()
+    while scriptrunning do
+        task.wait(300)
+        if not scriptrunning then break end
+        pcall(function()
+            virtualuser:CaptureController()
+            virtualuser:ClickButton2(Vector2.new(0, 0))
+        end)
+    end
+end)
+
+addConnection(localplayer.Idled:Connect(function()
+    if not scriptrunning then return end
+    pcall(function()
+        virtualuser:CaptureController()
+        virtualuser:ClickButton2(Vector2.new(0, 0))
+    end)
+end))
+
+-- ======================== UTILS & COLOR PARSER ========================
+local function getCharacter()
+    return localplayer.Character
+end
+
+local function getHRP()
+    local char = getCharacter()
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getItemPosition(item)
+    if item:IsA("BasePart") then
+        return item.Position
+    elseif item:IsA("Model") then
+        local success, pivot = pcall(function() return item:GetPivot() end)
+        return success and pivot.Position or nil
+    elseif item:IsA("Tool") then
+        local handle = item:FindFirstChild("Handle")
+        if handle and handle:IsA("BasePart") then
+            return handle.Position
+        end
+        local success, pivot = pcall(function() return item:GetPivot() end)
+        return success and pivot.Position or nil
+    end
+    return nil
+end
+
+local function getItemColor(itemName)
+    local name = string.lower(itemName)
+    if string.find(name, "red") then return Color3.fromRGB(255, 50, 50)
+    elseif string.find(name, "blue") then return Color3.fromRGB(50, 150, 255)
+    elseif string.find(name, "green") then return Color3.fromRGB(50, 255, 50)
+    elseif string.find(name, "yellow") then return Color3.fromRGB(255, 255, 50)
+    elseif string.find(name, "orange") then return Color3.fromRGB(255, 140, 0)
+    elseif string.find(name, "purple") then return Color3.fromRGB(180, 50, 255)
+    elseif string.find(name, "pink") then return Color3.fromRGB(255, 105, 180)
+    elseif string.find(name, "white") then return Color3.fromRGB(240, 240, 240)
+    elseif string.find(name, "black") or string.find(name, "dark") then return Color3.fromRGB(80, 80, 80)
+    elseif string.find(name, "gear") then return Color3.fromRGB(200, 170, 50) end
+    return COLORS.DefaultItem
+end
+
+local function isPiggyItem(item)
+    if not item.Parent then return false end
+    if item:IsA("Script") or item:IsA("LocalScript") or item:IsA("ModuleScript") or item:IsA("Camera") then
+        return false
+    end
+    local pickupScript = item:FindFirstChild("ItemPickupScript")
+    if not pickupScript then return false end
+    if not item:FindFirstChildOfClass("ClickDetector") then return false end
+    return true
+end
+
+local function hasKnife(target)
+    if not target then return false end
+    for _, desc in ipairs(target:GetDescendants()) do
+        if desc:IsA("Tool") then
+            local name = string.lower(desc.Name)
+            if name:find("knife") or name:find("blade") or name:find("sword") or name:find("dagger") then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function isPiggy(target, plr)
+    if not target then return false end
+    if target:GetAttribute("IsPiggy") or target:GetAttribute("Piggy") or target:GetAttribute("Traitor") then
+        return true
+    end
+    local flag = target:FindFirstChild("IsPiggy") or target:FindFirstChild("Piggy") or target:FindFirstChild("Traitor")
+    if flag and flag:IsA("BoolValue") and flag.Value then
+        return true
+    end
+    if plr and plr.Team then
+        local teamName = string.lower(plr.Team.Name)
+        if string.find(teamName, "piggy") or string.find(teamName, "traitor") or string.find(teamName, "infected") then
+            return true
+        end
+    end
+    local name = string.lower(target.Name)
+    if string.find(name, "piggy") or string.find(name, "bot") or string.find(name, "infected") or string.find(name, "traitor") then
+        return true
+    end
+    if target.Parent then
+        local pName = string.lower(target.Parent.Name)
+        if pName == "piggies" or pName == "infected" or pName == "traitor" then
+            return true
+        end
+    end
+    return false
+end
+
+local function isLocalPlayerPiggy()
+    local char = getCharacter()
+    if char and isPiggy(char, localplayer) then
+        return true
+    end
+    if localplayer.Team then
+        local tName = string.lower(localplayer.Team.Name)
+        if string.find(tName, "piggy") or string.find(tName, "traitor") or string.find(tName, "infected") then
+            return true
+        end
+    end
+    return false
+end
+
+-- ======================== GUI SETUP ========================
+local oldGui = hiddenUI:FindFirstChild("PiggyCleanGui") or localplayer.PlayerGui:FindFirstChild("PiggyCleanGui")
+if oldGui then oldGui:Destroy() end
+
+local screengui = Instance.new("ScreenGui")
+screengui.Name = "PiggyCleanGui"
+screengui.ResetOnSpawn = false
+screengui.Parent = hiddenUI
+
+local mainframe = Instance.new("Frame")
+mainframe.Name = "MainFrame"
+mainframe.Size = UDim2.fromOffset(MIN_WIDTH, BASE_HEIGHT)
+mainframe.Position = UDim2.new(0, 150, 0.5, -BASE_HEIGHT / 2)
+mainframe.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+mainframe.BackgroundTransparency = 0.8
+mainframe.BorderSizePixel = 0
+mainframe.Active = true
+mainframe.Parent = screengui
+
+Instance.new("UICorner", mainframe).CornerRadius = UDim.new(0, 8)
+
+local mainstroke = Instance.new("UIStroke")
+mainstroke.Color = Color3.fromRGB(65, 65, 65)
+mainstroke.Transparency = 0.3
+mainstroke.Thickness = 1
+mainstroke.Parent = mainframe
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 30)
+header.BackgroundTransparency = 1
+header.Active = true
+header.Parent = mainframe
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 1, 0)
+title.Position = UDim2.new(0, 0, 0, -2)
+title.BackgroundTransparency = 1
+title.Text = "piggy"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextSize = 15
+title.Font = Enum.Font.FredokaOne
+title.Parent = header
+
+local function createTextStroke(object, transparency)
+    local stroke = Instance.new("UIStroke")
+    stroke.Transparency = transparency or 0.4
+    stroke.Color = Color3.new(0, 0, 0)
+    stroke.Thickness = 1.5
+    stroke.Parent = object
+    return stroke
+end
+
+createTextStroke(title)
+
+-- ======================== DRAGGING ========================
+local dragging = false
+local dragStart
+local frameStart
+local dragInput
+local dragTween
+
+local function clampFramePosition(x, y)
+    local camera = workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+    local size = mainframe.AbsoluteSize
+    return UDim2.fromOffset(
+        math.clamp(x, 0, math.max(0, viewport.X - size.X)),
+        math.clamp(y, 0, math.max(0, viewport.Y - size.Y))
+    )
+end
+
+addConnection(header.InputBegan:Connect(function(input)
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    dragging = true
+    dragInput = input
+    dragStart = input.Position
+    frameStart = mainframe.AbsolutePosition
+    if dragTween then dragTween:Cancel(); dragTween = nil end
+end))
+
+addConnection(inputservice.InputChanged:Connect(function(input)
+    if not dragging or not dragStart or not frameStart then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local delta = input.Position - dragStart
+    local target = clampFramePosition(frameStart.X + delta.X, frameStart.Y + delta.Y)
+    if dragTween then dragTween:Cancel() end
+    dragTween = tweenservice:Create(mainframe, TweenInfo.new(0.07, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = target})
+    dragTween:Play()
+end))
+
+addConnection(inputservice.InputEnded:Connect(function(input)
+    if dragging and (input == dragInput or input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+        dragging = false
+        dragInput = nil
+        dragStart = nil
+        frameStart = nil
+    end
+end))
+
+local abortbtn = Instance.new("TextButton")
+abortbtn.Size = UDim2.fromOffset(24, 24)
+abortbtn.Position = UDim2.new(1, -28, 0, 3)
+abortbtn.BackgroundTransparency = 1
+abortbtn.Text = "X"
+abortbtn.TextColor3 = Color3.new(1, 1, 1)
+abortbtn.TextSize = 15
+abortbtn.Font = Enum.Font.FredokaOne
+abortbtn.Parent = header
+createTextStroke(abortbtn)
+
+local contentcontainer = Instance.new("Frame")
+contentcontainer.Size = UDim2.new(1, -16, 1, -38)
+contentcontainer.Position = UDim2.fromOffset(8, 30)
+contentcontainer.BackgroundTransparency = 1
+contentcontainer.Parent = mainframe
+
+local listlayout = Instance.new("UIListLayout")
+listlayout.SortOrder = Enum.SortOrder.LayoutOrder
+listlayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+listlayout.Padding = UDim.new(0, 4)
+listlayout.Parent = contentcontainer
+
+local function createToggleRow(layoutOrder, text, defaultState, callback)
+    local box = Instance.new("Frame")
+    box.Size = UDim2.new(1, 0, 0, 26)
+    box.BackgroundColor3 = Color3.new(0, 0, 0)
+    box.BackgroundTransparency = 0.8
+    box.BorderSizePixel = 0
+    box.LayoutOrder = layoutOrder
+    box.Parent = contentcontainer
+
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 4)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(65, 65, 65)
+    stroke.Transparency = 0.3
+    stroke.Parent = box
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.6, 0, 1, 0)
+    label.Position = UDim2.fromOffset(8, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = Color3.new(1, 1, 1)
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Font = Enum.Font.FredokaOne
+    label.Parent = box
+    createTextStroke(label)
+
+    local bg = Instance.new("Frame")
+    bg.Size = UDim2.fromOffset(36, 16)
+    bg.Position = UDim2.new(1, -42, 0.5, -8)
+    bg.BackgroundColor3 = defaultState and Color3.fromRGB(20, 20, 20) or Color3.new(0, 0, 0)
+    bg.BackgroundTransparency = defaultState and 0.3 or 0.6
+    bg.BorderSizePixel = 0
+    bg.Parent = box
+    Instance.new("UICorner", bg).CornerRadius = UDim.new(1, 0)
+
+    local bgstroke = Instance.new("UIStroke")
+    bgstroke.Color = Color3.fromRGB(65, 65, 65)
+    bgstroke.Transparency = 0.3
+    bgstroke.Parent = bg
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.fromOffset(12, 12)
+    knob.Position = defaultState and UDim2.new(1, -14, 0.5, -6) or UDim2.new(0, 2, 0.5, -6)
+    knob.BackgroundColor3 = Color3.new(1, 1, 1)
+    knob.BackgroundTransparency = defaultState and 0 or 0.3
+    knob.BorderSizePixel = 0
+    knob.Parent = bg
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+    local click = Instance.new("TextButton")
+    click.Size = UDim2.new(1, 0, 1, 0)
+    click.BackgroundTransparency = 1
+    click.Text = ""
+    click.Parent = box
+
+    local state = defaultState
+    click.MouseButton1Click:Connect(function()
+        state = not state
+        local info = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        tweenservice:Create(knob, info, {
+            Position = state and UDim2.new(1, -14, 0.5, -6) or UDim2.new(0, 2, 0.5, -6),
+            BackgroundTransparency = state and 0 or 0.3,
+        }):Play()
+        tweenservice:Create(bg, info, {
+            BackgroundTransparency = state and 0.3 or 0.6,
+            BackgroundColor3 = state and Color3.fromRGB(20, 20, 20) or Color3.new(0, 0, 0),
+        }):Play()
+        callback(state)
+    end)
+    return box
+end
+
+-- Toggles
+createToggleRow(1, "chams", false, function(state)
+    chamEnabled = state
+    for target, hl in pairs(highlights) do
+        if hl and hl.Parent then
+            hl.Enabled = chamEnabled
+        end
+    end
+end)
+
+createToggleRow(2, "noclip", false, function(state)
+    noclipEnabled = state
+    if not noclipEnabled and localplayer.Character then
+        for part, original in pairs(originalCollision) do
+            if part and part.Parent then part.CanCollide = original end
+        end
+        table.clear(originalCollision)
+    end
+end)
+
+createToggleRow(3, "fullbright", false, function(state)
+    fullbrightEnabled = state
+    if not fullbrightEnabled then
+        lighting.Brightness = originalLighting.Brightness
+        lighting.ClockTime = originalLighting.ClockTime
+        lighting.FogEnd = originalLighting.FogEnd
+        lighting.GlobalShadows = originalLighting.GlobalShadows
+        lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+    end
+end)
+
+createToggleRow(4, "ctrl click tp", false, function(state)
+    ctrlTpEnabled = state
+end)
+
+-- ======================== C-FRAME SAVER BUTTONS ========================
+local cframeContainer = Instance.new("Frame")
+cframeContainer.Size = UDim2.new(1, 0, 0, 26)
+cframeContainer.BackgroundTransparency = 1
+cframeContainer.LayoutOrder = 5
+cframeContainer.Parent = contentcontainer
+
+local cframeLayout = Instance.new("UIListLayout")
+cframeLayout.FillDirection = Enum.FillDirection.Horizontal
+cframeLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+cframeLayout.SortOrder = Enum.SortOrder.LayoutOrder
+cframeLayout.Padding = UDim.new(0, 4)
+cframeLayout.Parent = cframeContainer
+
+for i = 1, 2 do
+    local slotBox = Instance.new("Frame")
+    slotBox.Size = UDim2.new(0.49, 0, 1, 0)
+    slotBox.BackgroundColor3 = Color3.new(0, 0, 0)
+    slotBox.BackgroundTransparency = 0.8
+    slotBox.BorderSizePixel = 0
+    slotBox.LayoutOrder = i
+    slotBox.Parent = cframeContainer
+
+    Instance.new("UICorner", slotBox).CornerRadius = UDim.new(0, 4)
+    local slotStroke = Instance.new("UIStroke")
+    slotStroke.Color = Color3.fromRGB(65, 65, 65)
+    slotStroke.Transparency = 0.3
+    slotStroke.Parent = slotBox
+
+    local setBtn = Instance.new("TextButton")
+    setBtn.Size = UDim2.new(1, 0, 1, 0)
+    setBtn.BackgroundTransparency = 1
+    setBtn.Text = "save position " .. i
+    setBtn.TextColor3 = Color3.new(1, 1, 1)
+    setBtn.TextSize = 14
+    setBtn.Font = Enum.Font.FredokaOne
+    setBtn.Parent = slotBox
+    createTextStroke(setBtn)
+
+    local clearBtn = Instance.new("TextButton")
+    clearBtn.Size = UDim2.fromOffset(20, 20)
+    clearBtn.Position = UDim2.new(1, -22, 0.5, -10)
+    clearBtn.BackgroundTransparency = 1
+    clearBtn.Text = "X"
+    clearBtn.TextColor3 = Color3.new(1, 1, 1)
+    clearBtn.TextSize = 14
+    clearBtn.Font = Enum.Font.FredokaOne
+    clearBtn.Visible = false
+    clearBtn.ZIndex = 3
+    clearBtn.Parent = slotBox
+    createTextStroke(clearBtn)
+
+    addConnection(clearBtn.MouseEnter:Connect(function()
+        tweenservice:Create(clearBtn, TweenInfo.new(0.15), {TextColor3 = Color3.fromRGB(200, 50, 50)}):Play()
+    end))
+    addConnection(clearBtn.MouseLeave:Connect(function()
+        tweenservice:Create(clearBtn, TweenInfo.new(0.15), {TextColor3 = Color3.new(1, 1, 1)}):Play()
+    end))
+
+    addConnection(setBtn.MouseButton1Click:Connect(function()
+        local cf = savedCFrames[i]
+        if not cf then
+            local root = getHRP()
+            if not root then return end
+            savedCFrames[i] = root.CFrame
+            setBtn.Text = "tp position " .. i
+            setBtn.Size = UDim2.new(1, -24, 1, 0)
+            clearBtn.Visible = true
+            
+            tweenservice:Create(slotBox, TweenInfo.new(0.3), {BackgroundColor3 = Color3.fromRGB(0, 50, 0)}):Play()
+            task.delay(0.3, function()
+                tweenservice:Create(slotBox, TweenInfo.new(0.3), {BackgroundColor3 = Color3.new(0, 0, 0)}):Play()
+            end)
+        else
+            local char = getCharacter()
+            if char then char:PivotTo(cf) end
+        end
+    end))
+
+    addConnection(clearBtn.MouseButton1Click:Connect(function()
+        savedCFrames[i] = nil
+        setBtn.Text = "save position " .. i
+        setBtn.Size = UDim2.new(1, 0, 1, 0)
+        clearBtn.Visible = false
+    end))
+end
+
+-- Headers & Containers
+local function createSectionHeader(layoutOrder, text, color)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 0, 18)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = color
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.Font = Enum.Font.FredokaOne
+    label.LayoutOrder = layoutOrder
+    label.Visible = false
+    label.Parent = contentcontainer
+    createTextStroke(label)
+    return label
+end
+
+local piggyHeader = createSectionHeader(6, "piggy", COLORS.Piggy)
+local piggyContainer = Instance.new("Frame")
+piggyContainer.Size = UDim2.new(1, 0, 0, 0)
+piggyContainer.BackgroundTransparency = 1
+piggyContainer.LayoutOrder = 7
+piggyContainer.Visible = false
+piggyContainer.Parent = contentcontainer
+local piggyListLayout = Instance.new("UIListLayout")
+piggyListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+piggyListLayout.Padding = UDim.new(0, 3)
+piggyListLayout.Parent = piggyContainer
+
+local traitorHeader = createSectionHeader(8, "traitor", COLORS.Traitor)
+local traitorContainer = Instance.new("Frame")
+traitorContainer.Size = UDim2.new(1, 0, 0, 0)
+traitorContainer.BackgroundTransparency = 1
+traitorContainer.LayoutOrder = 9
+traitorContainer.Visible = false
+traitorContainer.Parent = contentcontainer
+local traitorListLayout = Instance.new("UIListLayout")
+traitorListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+traitorListLayout.Padding = UDim.new(0, 3)
+traitorListLayout.Parent = traitorContainer
+
+local playersHeader = createSectionHeader(10, "players", COLORS.Player)
+local playersContainer = Instance.new("Frame")
+playersContainer.Size = UDim2.new(1, 0, 0, 0)
+playersContainer.BackgroundTransparency = 1
+playersContainer.LayoutOrder = 11
+playersContainer.Visible = false
+playersContainer.Parent = contentcontainer
+local playersListLayout = Instance.new("UIListLayout")
+playersListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+playersListLayout.Padding = UDim.new(0, 3)
+playersListLayout.Parent = playersContainer
+
+local itemsHeader = createSectionHeader(12, "items", COLORS.ItemsHeader)
+local itemContainer = Instance.new("Frame")
+itemContainer.Size = UDim2.new(1, 0, 0, 0)
+itemContainer.BackgroundTransparency = 1
+itemContainer.LayoutOrder = 13
+itemContainer.Visible = false
+itemContainer.Parent = contentcontainer
+local itemListLayout = Instance.new("UIListLayout")
+itemListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+itemListLayout.Padding = UDim.new(0, 3)
+itemListLayout.Parent = itemContainer
+
+-- ======================== DYNAMIC SIZING ========================
+local function updateGuiSizeAndWidth()
+    local maxTextWidth = 0
+    for _, label in pairs(itemDistanceLabels) do
+        if label and label.Parent then maxTextWidth = math.max(maxTextWidth, 120) end
+    end
+    for _, label in pairs(entityDistanceLabels) do
+        if label and label.Parent then maxTextWidth = math.max(maxTextWidth, 120) end
+    end
+
+    local calculatedWidth = math.max(MIN_WIDTH, maxTextWidth + 85 + 30)
+    
+    local contentH = 30
+    if piggyContainer.Visible then
+        contentH += piggyHeader.AbsoluteSize.Y + piggyListLayout.AbsoluteContentSize.Y + 4
+    end
+    if traitorContainer.Visible then
+        contentH += traitorHeader.AbsoluteSize.Y + traitorListLayout.AbsoluteContentSize.Y + 4
+    end
+    if playersContainer.Visible then
+        contentH += playersHeader.AbsoluteSize.Y + playersListLayout.AbsoluteContentSize.Y + 4
+    end
+    if itemContainer.Visible then
+        contentH += itemsHeader.AbsoluteSize.Y + itemListLayout.AbsoluteContentSize.Y + 4
+    end
+
+    local totalHeight = BASE_HEIGHT + contentH
+
+    if calculatedWidth == lastGuiWidth and totalHeight == lastGuiHeight then return end
+    lastGuiWidth = calculatedWidth
+    lastGuiHeight = totalHeight
+
+    if resizeTween then resizeTween:Cancel() end
+    resizeTween = tweenservice:Create(mainframe, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.fromOffset(calculatedWidth, totalHeight)
+    })
+    resizeTween:Play()
+end
+
+piggyListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    piggyContainer.Size = UDim2.new(1, 0, 0, piggyListLayout.AbsoluteContentSize.Y)
+    updateGuiSizeAndWidth()
+end)
+
+traitorListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    traitorContainer.Size = UDim2.new(1, 0, 0, traitorListLayout.AbsoluteContentSize.Y)
+    updateGuiSizeAndWidth()
+end)
+
+playersListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    playersContainer.Size = UDim2.new(1, 0, 0, playersListLayout.AbsoluteContentSize.Y)
+    updateGuiSizeAndWidth()
+end)
+
+itemListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    itemContainer.Size = UDim2.new(1, 0, 0, itemListLayout.AbsoluteContentSize.Y)
+    updateGuiSizeAndWidth()
+end)
+
+-- ======================== HIGHLIGHTS ========================
+local function createHighlight(parent, color)
+    local hl = Instance.new("Highlight")
+    hl.Name = "PiggyHighlight"
+    hl.Adornee = parent
+    hl.FillColor = color
+    hl.FillTransparency = 0.8
+    hl.OutlineColor = getOutlineColor(color)
+    hl.OutlineTransparency = 0.2
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Enabled = chamEnabled
+    hl.Parent = hiddenUI
+    highlights[parent] = hl
+    return hl
+end
+
+-- ======================== ITEM BUILDERS ========================
+local function removeItem(item)
+    if highlights[item] then pcall(function() highlights[item]:Destroy() end); highlights[item] = nil end
+    if itemEntries[item] then pcall(function() itemEntries[item]:Destroy() end); itemEntries[item] = nil end
+    itemDistanceLabels[item] = nil
+    if itemConnections[item] then
+        for _, conn in ipairs(itemConnections[item]) do conn:Disconnect() end
+        itemConnections[item] = nil
+    end
+    itemContainer.Visible = (next(itemEntries) ~= nil)
+    itemsHeader.Visible = itemContainer.Visible
+    updateGuiSizeAndWidth()
+end
+
+local function addItem(item)
+    if not item.Parent or not isPiggyItem(item) or itemEntries[item] then return end
+
+    local entry = Instance.new("TextButton")
+    entry.Size = UDim2.new(1, 0, 0, 26)
+    entry.BackgroundColor3 = Color3.new(0, 0, 0)
+    entry.BackgroundTransparency = 0.8
+    entry.BorderSizePixel = 0
+    entry.AutoButtonColor = false
+    entry.Text = ""
+    entry.Parent = itemContainer
+    Instance.new("UICorner", entry).CornerRadius = UDim.new(0, 4)
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(65, 65, 65)
+    stroke.Transparency = 0.3
+    stroke.Parent = entry
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(0.6, 0, 1, 0)
+    nameLabel.Position = UDim2.fromOffset(8, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = item.Name
+    nameLabel.TextColor3 = Color3.new(1, 1, 1)
+    nameLabel.TextSize = 14
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.Font = Enum.Font.FredokaOne
+    nameLabel.Parent = entry
+    createTextStroke(nameLabel)
+
+    local distLabel = Instance.new("TextLabel")
+    distLabel.Size = UDim2.new(0.4, -12, 1, 0)
+    distLabel.Position = UDim2.new(0.6, 0, 0, 0)
+    distLabel.BackgroundTransparency = 1
+    distLabel.Text = "0 studs"
+    distLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+    distLabel.TextTransparency = 0.1
+    distLabel.TextSize = 14
+    distLabel.TextXAlignment = Enum.TextXAlignment.Right
+    distLabel.Font = Enum.Font.FredokaOne
+    distLabel.Parent = entry
+    createTextStroke(distLabel, 0.5)
+
+    itemDistanceLabels[item] = distLabel
+    itemEntries[item] = entry
+
+    local clickConn = entry.MouseButton1Click:Connect(function()
+        local pos = getItemPosition(item)
+        local char = getCharacter()
+        if pos and char then
+            char:PivotTo(CFrame.new(pos + Vector3.new(0, 3, 0)))
+        end
+    end)
+
+    local itemCol = getItemColor(item.Name)
+    createHighlight(item, itemCol)
+
+    itemConnections[item] = {
+        clickConn,
+        item.AncestryChanged:Connect(function(_, parent)
+            if not parent then removeItem(item) end
+        end)
+    }
+
+    itemContainer.Visible = true
+    itemsHeader.Visible = true
+    updateGuiSizeAndWidth()
+end
+
+-- ======================== ENTITY BUILDERS ========================
+local function removeEntity(target)
+    if highlights[target] then pcall(function() highlights[target]:Destroy() end); highlights[target] = nil end
+    if entityEntries[target] then pcall(function() entityEntries[target]:Destroy() end); entityEntries[target] = nil end
+    entityDistanceLabels[target] = nil
+    if entityViewports[target] then pcall(function() entityViewports[target]:Destroy() end); entityViewports[target] = nil end
+    botPositions[target] = nil
+    if entityConnections[target] then
+        for _, conn in ipairs(entityConnections[target]) do conn:Disconnect() end
+        entityConnections[target] = nil
+    end
+
+    piggyContainer.Visible = false
+    piggyHeader.Visible = false
+    for model, container in pairs(entityEntries) do
+        if container.Parent == piggyContainer then piggyContainer.Visible = true; piggyHeader.Visible = true end
+    end
+
+    traitorContainer.Visible = false
+    traitorHeader.Visible = false
+    for model, container in pairs(entityEntries) do
+        if container.Parent == traitorContainer then traitorContainer.Visible = true; traitorHeader.Visible = true end
+    end
+
+    playersContainer.Visible = false
+    playersHeader.Visible = false
+    for model, container in pairs(entityEntries) do
+        if container.Parent == playersContainer then playersContainer.Visible = true; playersHeader.Visible = true end
+    end
+
+    updateGuiSizeAndWidth()
+end
+
+local function addEntity(target, displayName, entityColor, parentContainer, plr)
+    if entityEntries[target] then return end
+
+    local entry = Instance.new("TextButton")
+    entry.Size = UDim2.new(1, 0, 0, 26)
+    entry.BackgroundColor3 = Color3.new(0, 0, 0)
+    entry.BackgroundTransparency = 0.8
+    entry.BorderSizePixel = 0
+    entry.AutoButtonColor = false
+    entry.Text = ""
+    entry.Parent = parentContainer
+    Instance.new("UICorner", entry).CornerRadius = UDim.new(0, 4)
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(65, 65, 65)
+    stroke.Transparency = 0.3
+    stroke.Parent = entry
+
+    -- Fully working MM2-style Player viewport rendering using PlayerThumbnail
+    if plr then
+        local vp = Instance.new("ImageLabel")
+        vp.Size = UDim2.fromOffset(20, 20)
+        vp.Position = UDim2.new(0, 6, 0.5, -10)
+        vp.BackgroundTransparency = 1
+        vp.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=420&h=420"
+        vp.Parent = entry
+        entityViewports[target] = vp
+    end
+
+    local textOffset = plr and 30 or 8
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(0.6, plr and -26 or -8, 1, 0)
+    nameLabel.Position = UDim2.fromOffset(textOffset, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = displayName
+    nameLabel.TextColor3 = Color3.new(1, 1, 1)
+    nameLabel.TextSize = 14
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.Font = Enum.Font.FredokaOne
+    nameLabel.Parent = entry
+    createTextStroke(nameLabel)
+
+    local distLabel = Instance.new("TextLabel")
+    distLabel.Size = UDim2.new(0.4, -12, 1, 0)
+    distLabel.Position = UDim2.new(0.6, 0, 0, 0)
+    distLabel.BackgroundTransparency = 1
+    distLabel.Text = "0 studs"
+    distLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+    distLabel.TextTransparency = 0.1
+    distLabel.TextSize = 14
+    distLabel.TextXAlignment = Enum.TextXAlignment.Right
+    distLabel.Font = Enum.Font.FredokaOne
+    distLabel.Parent = entry
+    createTextStroke(distLabel, 0.5)
+
+    entityDistanceLabels[target] = distLabel
+    entityEntries[target] = entry
+
+    local clickConn = entry.MouseButton1Click:Connect(function()
+        local root = target:FindFirstChild("HumanoidRootPart")
+        local char = getCharacter()
+        if root and char then
+            char:PivotTo(CFrame.new(root.Position + Vector3.new(0, 3, 0)))
+        end
+    end)
+
+    createHighlight(target, entityColor)
+
+    local ancestryConn = target.AncestryChanged:Connect(function(_, parent)
+        if not parent then removeEntity(target) end
+    end)
+    entityConnections[target] = {clickConn, ancestryConn}
+
+    if parentContainer == piggyContainer then
+        piggyContainer.Visible = true
+        piggyHeader.Visible = true
+    elseif parentContainer == traitorContainer then
+        traitorContainer.Visible = true
+        traitorHeader.Visible = true
+    elseif parentContainer == playersContainer then
+        playersContainer.Visible = true
+        playersHeader.Visible = true
+    end
+
+    updateGuiSizeAndWidth()
+end
+
+-- Scan items initially
+for _, desc in ipairs(workspace:GetDescendants()) do
+    if desc.Name == "ItemPickupScript" and desc.Parent and isPiggyItem(desc.Parent) then
+        addItem(desc.Parent)
+    end
+end
+
+addConnection(workspace.DescendantAdded:Connect(function(desc)
+    if desc.Name == "ItemPickupScript" and desc.Parent then
+        task.defer(function()
+            if desc.Parent and isPiggyItem(desc.Parent) then addItem(desc.Parent) end
+        end)
+    end
+end))
+
+addConnection(workspace.DescendantRemoving:Connect(function(desc)
+    removeItem(desc)
+    removeEntity(desc)
+end))
+
+-- ======================== INTELLIGENT REFRESH LOOP ========================
+local function refreshEntitiesAndDistances()
+    if not scriptrunning then return end
+
+    local hrp = getHRP()
+    local myPos = hrp and hrp.Position or Vector3.zero
+    local localIsPiggy = isLocalPlayerPiggy()
+
+    local foundPiggies = {}
+    local foundTraitors = {}
+    local foundPlayers = {}
+
+    -- Check Players
+    for _, plr in ipairs(players:GetPlayers()) do
+        if plr ~= localplayer and plr.Character then
+            local char = plr.Character
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if root and hum and hum.Health > 0 then
+                if hasKnife(char) then
+                    foundTraitors[char] = {name = plr.Name, player = plr}
+                elseif not localIsPiggy and isPiggy(char, plr) then
+                    foundPiggies[char] = {name = plr.Name, player = plr}
+                else
+                    foundPlayers[char] = {name = plr.Name, player = plr}
+                end
+            end
+        end
+    end
+
+    -- Check Workspace Piggy Bots / NPCs
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("Model") and desc:FindFirstChildOfClass("Humanoid") then
+            local hum = desc:FindFirstChildOfClass("Humanoid")
+            local root = desc:FindFirstChild("HumanoidRootPart")
+            if not players:GetPlayerFromCharacter(desc) and root and hum and hum.Health > 0 then
+                if isPiggy(desc, nil) or hasKnife(desc) then
+                    local currentPos = root.Position
+                    if not botPositions[desc] then
+                        botPositions[desc] = {pos = currentPos, moved = false}
+                    else
+                        if (currentPos - botPositions[desc].pos).Magnitude > 2 then
+                            botPositions[desc].moved = true
+                        end
+                    end
+
+                    if botPositions[desc].moved then
+                        foundPiggies[desc] = {name = "bot", player = nil}
+                    end
+                end
+            end
+        end
+    end
+
+    for target, _ in pairs(entityEntries) do
+        local hum = target:FindFirstChildOfClass("Humanoid")
+        if not foundPiggies[target] and not foundTraitors[target] and not foundPlayers[target] or (hum and hum.Health <= 0) then
+            removeEntity(target)
+        end
+    end
+
+    for char, data in pairs(foundPiggies) do
+        if not entityEntries[char] then
+            addEntity(char, data.name, COLORS.Piggy, piggyContainer, data.player)
+        else
+            if highlights[char] and highlights[char].FillColor ~= COLORS.Piggy then
+                highlights[char].FillColor = COLORS.Piggy
+                highlights[char].OutlineColor = getOutlineColor(COLORS.Piggy)
+            end
+        end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root and entityDistanceLabels[char] then
+            local dist = math.floor((root.Position - myPos).Magnitude)
+            entityDistanceLabels[char].Text = dist .. " studs"
+        end
+    end
+
+    for char, data in pairs(foundTraitors) do
+        if not entityEntries[char] then
+            addEntity(char, data.name, COLORS.Traitor, traitorContainer, data.player)
+        else
+            if highlights[char] and highlights[char].FillColor ~= COLORS.Traitor then
+                highlights[char].FillColor = COLORS.Traitor
+                highlights[char].OutlineColor = getOutlineColor(COLORS.Traitor)
+            end
+        end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root and entityDistanceLabels[char] then
+            local dist = math.floor((root.Position - myPos).Magnitude)
+            entityDistanceLabels[char].Text = dist .. " studs"
+        end
+    end
+
+    for char, data in pairs(foundPlayers) do
+        if not entityEntries[char] then
+            addEntity(char, data.name, COLORS.Player, playersContainer, data.player)
+        else
+            if highlights[char] and highlights[char].FillColor ~= COLORS.Player then
+                highlights[char].FillColor = COLORS.Player
+                highlights[char].OutlineColor = getOutlineColor(COLORS.Player)
+            end
+        end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root and entityDistanceLabels[char] then
+            local dist = math.floor((root.Position - myPos).Magnitude)
+            entityDistanceLabels[char].Text = dist .. " studs"
+        end
+    end
+
+    for item, label in pairs(itemDistanceLabels) do
+        if item.Parent then
+            local pos = getItemPosition(item)
+            if pos then
+                local dist = math.floor((pos - myPos).Magnitude)
+                label.Text = dist .. " studs"
+            end
+        end
+    end
+
+    if fullbrightEnabled then
+        lighting.Brightness = 2
+        lighting.ClockTime = 14
+        lighting.FogEnd = 100000
+        lighting.GlobalShadows = false
+        lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+    end
+
+    if noclipEnabled and localplayer.Character then
+        local myChar = localplayer.Character
+        for _, part in ipairs(myChar:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide then
+                originalCollision[part] = part.CanCollide
+                part.CanCollide = false
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while scriptrunning do
+        task.wait(0.25)
+        refreshEntitiesAndDistances()
+    end
+end)
+
+-- ======================== CTRL + CLICK TP ========================
+local function teleportTo(position)
+	local character = getCharacter()
+	if not character then
+		return
+	end
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return
+	end
+
+	character:PivotTo(CFrame.new(position + Vector3.new(0, 3, 0)))
+end
+
+addConnection(mouse.Button1Down:Connect(function()
+    if not ctrlTpEnabled then return end
+	if inputservice:IsKeyDown(Enum.KeyCode.LeftControl)
+		or inputservice:IsKeyDown(Enum.KeyCode.RightControl) then
+
+		if mouse.Hit then
+			teleportTo(mouse.Hit.Position)
+		end
+	end
+end))
+
+-- ======================== FULL ABORT CLEANUP ========================
+local function abortScript()
+    if not scriptrunning then return end
+    scriptrunning = false
+
+    if noclipEnabled then
+        for part, original in pairs(originalCollision) do
+            if part and part.Parent then part.CanCollide = original end
+        end
+    end
+
+    if fullbrightEnabled then
+        lighting.Brightness = originalLighting.Brightness
+        lighting.ClockTime = originalLighting.ClockTime
+        lighting.FogEnd = originalLighting.FogEnd
+        lighting.GlobalShadows = originalLighting.GlobalShadows
+        lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+    end
+
+    for _, conn in ipairs(globalConns) do pcall(function() conn:Disconnect() end) end
+    for _, hl in pairs(highlights) do pcall(function() hl:Destroy() end) end
+
+    table.clear(highlights)
+    table.clear(itemEntries)
+    table.clear(itemDistanceLabels)
+    table.clear(itemConnections)
+    table.clear(entityEntries)
+    table.clear(entityDistanceLabels)
+    table.clear(entityConnections)
+    table.clear(entityViewports)
+    table.clear(botPositions)
+    table.clear(globalConns)
+    table.clear(originalCollision)
+
+    pcall(function() screengui:Destroy() end)
+end
+
+addConnection(abortbtn.MouseButton1Click:Connect(abortScript))
+
+addConnection(abortbtn.MouseEnter:Connect(function()
+    tweenservice:Create(abortbtn, TweenInfo.new(0.15), {TextColor3 = Color3.fromRGB(200, 50, 50)}):Play()
+end))
+addConnection(abortbtn.MouseLeave:Connect(function()
+    tweenservice:Create(abortbtn, TweenInfo.new(0.15), {TextColor3 = Color3.new(1, 1, 1)}):Play()
+end))
