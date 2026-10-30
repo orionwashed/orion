@@ -26,19 +26,19 @@ local hiddenUI = (safeGetHui and safeGetHui())
 local autofarmcoins = false
 local autoreset = false
 local scriptrunning = true
-local chamEnabled = true
+local chamEnabled = false
 
 local MIN_WIDTH = 220
-local BASE_HEIGHT = 184
+local BASE_HEIGHT = 214
 local ROUND_START_DELAY = 25
-local SAFE_RADIUS = 10
+local SAFE_RADIUS = 15
 local CHAM_REPAIR_INTERVAL = 0.75
 
 local COIN_REFRESH_INTERVAL = 2
 local EMPTY_SEARCH_WAIT = 0.15
 local COIN_TRAVEL_SPEED = 20.5
 
-local GUN_DEATH_RADIUS = 10
+local GUN_DEATH_RADIUS = 15
 
 local COLORS = {
     Gun = Color3.fromRGB(0, 126, 245),
@@ -509,8 +509,77 @@ local function createDoubleEntityRow(layoutOrder)
 
     createTextStroke(distLabel)
 
-    return box, nameLabel, distLabel, icon
+    local clickButton = Instance.new("TextButton")
+    clickButton.Name = "PlayerCardClick"
+    clickButton.Size = UDim2.new(1, 0, 1, 0)
+    clickButton.BackgroundTransparency = 1
+    clickButton.Text = ""
+    clickButton.AutoButtonColor = false
+    clickButton.ZIndex = 10
+    clickButton.Parent = box
+
+    return box, nameLabel, distLabel, icon, clickButton
 end
+
+-- ======================== CHAMS TOGGLE ========================
+local chamcard = Instance.new("Frame")
+chamcard.Size = UDim2.new(1, 0, 0, 26)
+chamcard.BackgroundColor3 = Color3.new(0, 0, 0)
+chamcard.BackgroundTransparency = 0.8
+chamcard.BorderSizePixel = 0
+chamcard.LayoutOrder = 1
+chamcard.Parent = contentcontainer
+
+Instance.new("UICorner", chamcard).CornerRadius = UDim.new(0, 4)
+
+local chamcardstroke = Instance.new("UIStroke")
+chamcardstroke.Color = Color3.fromRGB(65, 65, 65)
+chamcardstroke.Transparency = 0.3
+chamcardstroke.Parent = chamcard
+
+local chamlabel = Instance.new("TextLabel")
+chamlabel.Size = UDim2.new(0.6, 0, 1, 0)
+chamlabel.Position = UDim2.fromOffset(8, 0)
+chamlabel.BackgroundTransparency = 1
+chamlabel.Text = "chams"
+chamlabel.TextColor3 = Color3.new(1, 1, 1)
+chamlabel.TextSize = 14
+chamlabel.TextXAlignment = Enum.TextXAlignment.Left
+chamlabel.Font = Enum.Font.FredokaOne
+chamlabel.Parent = chamcard
+
+createTextStroke(chamlabel)
+
+local chambg = Instance.new("Frame")
+chambg.Size = UDim2.fromOffset(36, 16)
+chambg.Position = UDim2.new(1, -42, 0.5, -8)
+chambg.BackgroundColor3 = Color3.new(0, 0, 0)
+chambg.BackgroundTransparency = 0.6
+chambg.BorderSizePixel = 0
+chambg.Parent = chamcard
+
+Instance.new("UICorner", chambg).CornerRadius = UDim.new(1, 0)
+
+local chambgstroke = Instance.new("UIStroke")
+chambgstroke.Color = Color3.fromRGB(65, 65, 65)
+chambgstroke.Transparency = 0.3
+chambgstroke.Parent = chambg
+
+local chamknob = Instance.new("Frame")
+chamknob.Size = UDim2.fromOffset(12, 12)
+chamknob.Position = UDim2.new(1, -14, 0.5, -6)
+chamknob.BackgroundColor3 = Color3.new(1, 1, 1)
+chamknob.BackgroundTransparency = 0
+chamknob.BorderSizePixel = 0
+chamknob.Parent = chambg
+
+Instance.new("UICorner", chamknob).CornerRadius = UDim.new(1, 0)
+
+local chamclick = Instance.new("TextButton")
+chamclick.Size = UDim2.new(1, 0, 1, 0)
+chamclick.BackgroundTransparency = 1
+chamclick.Text = ""
+chamclick.Parent = chamcard
 
 -- ======================== FARM TOGGLE ========================
 local farmcard = Instance.new("Frame")
@@ -518,7 +587,7 @@ farmcard.Size = UDim2.new(1, 0, 0, 26)
 farmcard.BackgroundColor3 = Color3.new(0, 0, 0)
 farmcard.BackgroundTransparency = 0.8
 farmcard.BorderSizePixel = 0
-farmcard.LayoutOrder = 1
+farmcard.LayoutOrder = 2
 farmcard.Parent = contentcontainer
 
 Instance.new("UICorner", farmcard).CornerRadius = UDim.new(0, 4)
@@ -578,7 +647,7 @@ resetcard.Size = UDim2.new(1, 0, 0, 26)
 resetcard.BackgroundColor3 = Color3.new(0, 0, 0)
 resetcard.BackgroundTransparency = 0.8
 resetcard.BorderSizePixel = 0
-resetcard.LayoutOrder = 2
+resetcard.LayoutOrder = 3
 resetcard.Parent = contentcontainer
 
 Instance.new("UICorner", resetcard).CornerRadius = UDim.new(0, 4)
@@ -632,21 +701,39 @@ resetclick.BackgroundTransparency = 1
 resetclick.Text = ""
 resetclick.Parent = resetcard
 
-local roundstatus = createRow(3, "status: disabled")
-local roundslabel = createRow(4, "rounds played: 0")
-local sessionlabel = createRow(5, "session time: 0s")
+local roundstatus = createRow(4, "status: disabled")
+local roundslabel = createRow(5, "rounds played: 0")
+local sessionlabel = createRow(6, "session time: 0s")
 
-local murdHeader = createSectionHeader(6, "murderer", COLORS.Knife)
-local murdBox, murdNameLabel, murdDistLabel, murdIcon =
-    createDoubleEntityRow(7)
+local murdHeader = createSectionHeader(7, "murderer", COLORS.Knife)
+local murdBox, murdNameLabel, murdDistLabel, murdIcon, murdClick =
+    createDoubleEntityRow(8)
 
-local sherHeader = createSectionHeader(8, "sheriff", COLORS.Gun)
-local sherBox, sherNameLabel, sherDistLabel, sherIcon =
-    createDoubleEntityRow(9)
+local sherHeader = createSectionHeader(9, "sheriff", COLORS.Gun)
+local sherBox, sherNameLabel, sherDistLabel, sherIcon, sherClick =
+    createDoubleEntityRow(10)
 
-local heroHeader = createSectionHeader(10, "hero", COLORS.Hero)
-local heroBox, heroNameLabel, heroDistLabel, heroIcon =
-    createDoubleEntityRow(11)
+local heroHeader = createSectionHeader(11, "hero", COLORS.Hero)
+local heroBox, heroNameLabel, heroDistLabel, heroIcon, heroClick =
+    createDoubleEntityRow(12)
+
+local function setChamToggleState(state)
+    local info = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+    tweenservice:Create(chamknob, info, {
+        Position = state
+            and UDim2.new(1, -14, 0.5, -6)
+            or UDim2.new(0, 2, 0.5, -6),
+        BackgroundTransparency = state and 0 or 0.3,
+    }):Play()
+
+    tweenservice:Create(chambg, info, {
+        BackgroundTransparency = state and 0.3 or 0.6,
+        BackgroundColor3 = state
+            and Color3.fromRGB(20, 20, 20)
+            or Color3.new(0, 0, 0),
+    }):Play()
+end
 
 -- ======================== STATUS / GUI SIZE ========================
 local function setstatus(text, color)
@@ -1420,7 +1507,66 @@ addConnection(localplayer.CharacterAdded:Connect(function(character)
     end)
 end))
 
+-- ======================== PLAYER CARD TELEPORT ========================
+local function teleportToPlayer(plr)
+    if not scriptrunning or not plr or plr == localplayer then
+        return
+    end
+
+    local targetCharacter = plr.Character
+    local targetRoot = targetCharacter
+        and targetCharacter:FindFirstChild("HumanoidRootPart")
+
+    local character = localplayer.Character
+    local localRoot = character
+        and character:FindFirstChild("HumanoidRootPart")
+
+    local targetHumanoid = targetCharacter
+        and targetCharacter:FindFirstChildOfClass("Humanoid")
+
+    if not targetRoot or not localRoot
+        or (targetHumanoid and targetHumanoid.Health <= 0) then
+        return
+    end
+
+    -- Place the local character a few studs beside the selected player.
+    localRoot.CFrame = targetRoot.CFrame * CFrame.new(3, 0, 0)
+end
+
+local function connectPlayerCard(button)
+    addConnection(button.MouseButton1Click:Connect(function()
+        local userId = button.Parent:GetAttribute("TargetUserId")
+        if not userId then
+            return
+        end
+
+        local target = players:GetPlayerByUserId(userId)
+        teleportToPlayer(target)
+    end))
+end
+
+connectPlayerCard(murdClick)
+connectPlayerCard(sherClick)
+connectPlayerCard(heroClick)
+
 -- ======================== TOGGLES ========================
+addConnection(chamclick.MouseButton1Click:Connect(function()
+    chamEnabled = not chamEnabled
+    setChamToggleState(chamEnabled)
+
+    for _, highlight in pairs(chams) do
+        if highlight and highlight.Parent then
+            highlight.Enabled = chamEnabled
+        end
+    end
+
+    for _, data in pairs(droppedGunChams) do
+        if data.Highlight and data.Highlight.Parent then
+            data.Highlight.Enabled = chamEnabled
+        end
+    end
+end))
+
 addConnection(farmclick.MouseButton1Click:Connect(function()
     autofarmcoins = not autofarmcoins
     settogglestate(autofarmcoins)
@@ -1514,6 +1660,8 @@ local function abortScript()
         screengui:Destroy()
     end)
 end
+
+setChamToggleState(chamEnabled)
 
 addConnection(abortbtn.MouseButton1Click:Connect(abortScript))
 
@@ -1610,6 +1758,7 @@ task.spawn(function()
             if not plr then
                 nameLabel.Text = ""
                 distLabel.Text = ""
+                box:SetAttribute("TargetUserId", nil)
 
                 if lastUserId.value ~= nil then
                     lastUserId.value = nil
@@ -1621,6 +1770,7 @@ task.spawn(function()
 
             nameLabel.Text = plr.Name
             distLabel.Text = roleDistance .. " studs"
+            box:SetAttribute("TargetUserId", plr.UserId)
 
             if lastUserId.value ~= plr.UserId then
                 lastUserId.value = plr.UserId
