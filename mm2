@@ -165,7 +165,7 @@ local function iscoin(obj)
 
     return name:find("coin", 1, true) ~= nil
         or name:find("candy", 1, true) ~= nil
-        or name:find("container", 1, true) ~= nil
+        or name:find("token", 1, true) ~= nil
 end
 
 local function addCoin(obj)
