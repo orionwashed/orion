@@ -25,11 +25,12 @@ local hiddenUI = (safeGetHui and safeGetHui())
 -- ======================== SETTINGS ========================
 local autofarmcoins = false
 local autoreset = false
+local autoavoid = false
 local scriptrunning = true
 local chamEnabled = false
 
 local MIN_WIDTH = 220
-local BASE_HEIGHT = 214
+local BASE_HEIGHT = 244
 local ROUND_START_DELAY = 25
 local SAFE_RADIUS = 15
 local CHAM_REPAIR_INTERVAL = 0.75
@@ -437,9 +438,9 @@ local function createRow(layoutOrder, defaultText)
     label.Font = Enum.Font.FredokaOne
     label.Parent = box
 
-    createTextStroke(label)
+    local textStroke = createTextStroke(label)
 
-    return label
+    return label, textStroke
 end
 
 local function createSectionHeader(layoutOrder, text, color)
@@ -567,9 +568,9 @@ chambgstroke.Parent = chambg
 
 local chamknob = Instance.new("Frame")
 chamknob.Size = UDim2.fromOffset(12, 12)
-chamknob.Position = UDim2.new(1, -14, 0.5, -6)
+chamknob.Position = UDim2.new(0, 2, 0.5, -6)
 chamknob.BackgroundColor3 = Color3.new(1, 1, 1)
-chamknob.BackgroundTransparency = 0
+chamknob.BackgroundTransparency = 0.3
 chamknob.BorderSizePixel = 0
 chamknob.Parent = chambg
 
@@ -629,7 +630,7 @@ local farmknob = Instance.new("Frame")
 farmknob.Size = UDim2.fromOffset(12, 12)
 farmknob.Position = UDim2.new(0, 2, 0.5, -6)
 farmknob.BackgroundColor3 = Color3.new(1, 1, 1)
-farmknob.BackgroundTransparency = 0.2
+farmknob.BackgroundTransparency = 0.3
 farmknob.BorderSizePixel = 0
 farmknob.Parent = farmbg
 
@@ -689,7 +690,7 @@ local resetknob = Instance.new("Frame")
 resetknob.Size = UDim2.fromOffset(12, 12)
 resetknob.Position = UDim2.new(0, 2, 0.5, -6)
 resetknob.BackgroundColor3 = Color3.new(1, 1, 1)
-resetknob.BackgroundTransparency = 0.2
+resetknob.BackgroundTransparency = 0.3
 resetknob.BorderSizePixel = 0
 resetknob.Parent = resetbg
 
@@ -701,21 +702,81 @@ resetclick.BackgroundTransparency = 1
 resetclick.Text = ""
 resetclick.Parent = resetcard
 
-local roundstatus = createRow(4, "status: disabled")
-local roundslabel = createRow(5, "rounds played: 0")
-local sessionlabel = createRow(6, "session time: 0s")
+-- ======================== AUTO AVOID TOGGLE ========================
+local avoidcard = Instance.new("Frame")
+avoidcard.Size = UDim2.new(1, 0, 0, 26)
+avoidcard.BackgroundColor3 = Color3.new(0, 0, 0)
+avoidcard.BackgroundTransparency = 0.8
+avoidcard.BorderSizePixel = 0
+avoidcard.LayoutOrder = 4
+avoidcard.Parent = contentcontainer
 
-local murdHeader = createSectionHeader(7, "murderer", COLORS.Knife)
+Instance.new("UICorner", avoidcard).CornerRadius = UDim.new(0, 4)
+
+local avoidstroke = Instance.new("UIStroke")
+avoidstroke.Color = Color3.fromRGB(65, 65, 65)
+avoidstroke.Transparency = 0.3
+avoidstroke.Parent = avoidcard
+
+local avoidlabel = Instance.new("TextLabel")
+avoidlabel.Size = UDim2.new(0.6, 0, 1, 0)
+avoidlabel.Position = UDim2.fromOffset(8, 0)
+avoidlabel.BackgroundTransparency = 1
+avoidlabel.Text = "auto avoid"
+avoidlabel.TextColor3 = Color3.new(1, 1, 1)
+avoidlabel.TextSize = 14
+avoidlabel.TextXAlignment = Enum.TextXAlignment.Left
+avoidlabel.Font = Enum.Font.FredokaOne
+avoidlabel.Parent = avoidcard
+
+createTextStroke(avoidlabel)
+
+local avoidbg = Instance.new("Frame")
+avoidbg.Size = UDim2.fromOffset(36, 16)
+avoidbg.Position = UDim2.new(1, -42, 0.5, -8)
+avoidbg.BackgroundColor3 = Color3.new(0, 0, 0)
+avoidbg.BackgroundTransparency = 0.6
+avoidbg.BorderSizePixel = 0
+avoidbg.Parent = avoidcard
+
+Instance.new("UICorner", avoidbg).CornerRadius = UDim.new(1, 0)
+
+local avoidbggstroke = Instance.new("UIStroke")
+avoidbggstroke.Color = Color3.fromRGB(65, 65, 65)
+avoidbggstroke.Transparency = 0.3
+avoidbggstroke.Parent = avoidbg
+
+local avoidknob = Instance.new("Frame")
+avoidknob.Size = UDim2.fromOffset(12, 12)
+avoidknob.Position = UDim2.new(0, 2, 0.5, -6)
+avoidknob.BackgroundColor3 = Color3.new(1, 1, 1)
+avoidknob.BackgroundTransparency = 0.3
+avoidknob.BorderSizePixel = 0
+avoidknob.Parent = avoidbg
+
+Instance.new("UICorner", avoidknob).CornerRadius = UDim.new(1, 0)
+
+local avoidclick = Instance.new("TextButton")
+avoidclick.Size = UDim2.new(1, 0, 1, 0)
+avoidclick.BackgroundTransparency = 1
+avoidclick.Text = ""
+avoidclick.Parent = avoidcard
+
+local roundstatus, statusStroke = createRow(5, "status: disabled")
+local roundslabel = createRow(6, "rounds played: 0")
+local sessionlabel = createRow(7, "session time: 0s")
+
+local murdHeader = createSectionHeader(8, "murderer", COLORS.Knife)
 local murdBox, murdNameLabel, murdDistLabel, murdIcon, murdClick =
-    createDoubleEntityRow(8)
+    createDoubleEntityRow(9)
 
-local sherHeader = createSectionHeader(9, "sheriff", COLORS.Gun)
+local sherHeader = createSectionHeader(10, "sheriff", COLORS.Gun)
 local sherBox, sherNameLabel, sherDistLabel, sherIcon, sherClick =
-    createDoubleEntityRow(10)
+    createDoubleEntityRow(11)
 
-local heroHeader = createSectionHeader(11, "hero", COLORS.Hero)
+local heroHeader = createSectionHeader(12, "hero", COLORS.Hero)
 local heroBox, heroNameLabel, heroDistLabel, heroIcon, heroClick =
-    createDoubleEntityRow(12)
+    createDoubleEntityRow(13)
 
 local function setChamToggleState(state)
     local info = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -750,6 +811,18 @@ local function setstatus(text, color)
 
     roundstatus.Text = "status: " .. text
     roundstatus.TextColor3 = color
+
+    if text == "disabled" then
+        roundstatus.TextTransparency = 0.4
+        if statusStroke then
+            statusStroke.Transparency = 0.8
+        end
+    else
+        roundstatus.TextTransparency = 0
+        if statusStroke then
+            statusStroke.Transparency = 0.4
+        end
+    end
 end
 
 local function settogglestate(state)
@@ -789,6 +862,28 @@ local function setresettogglestate(state)
     }):Play()
 
     tweenservice:Create(resetbg, info, {
+        BackgroundTransparency = state and 0.3 or 0.6,
+        BackgroundColor3 = state
+            and Color3.fromRGB(20, 20, 20)
+            or Color3.new(0, 0, 0),
+    }):Play()
+end
+
+local function setavoidtogglestate(state)
+    local info = TweenInfo.new(
+        0.2,
+        Enum.EasingStyle.Quad,
+        Enum.EasingDirection.Out
+    )
+
+    tweenservice:Create(avoidknob, info, {
+        Position = state
+            and UDim2.new(1, -14, 0.5, -6)
+            or UDim2.new(0, 2, 0.5, -6),
+        BackgroundTransparency = state and 0 or 0.3,
+    }):Play()
+
+    tweenservice:Create(avoidbg, info, {
         BackgroundTransparency = state and 0.3 or 0.6,
         BackgroundColor3 = state
             and Color3.fromRGB(20, 20, 20)
@@ -1574,6 +1669,8 @@ addConnection(farmclick.MouseButton1Click:Connect(function()
     if not autofarmcoins then
         autoreset = false
         setresettogglestate(false)
+        autoavoid = false
+        setavoidtogglestate(false)
         stopmovement()
         setnoclip(false)
         setstatus("disabled", Color3.new(1, 1, 1))
@@ -1612,6 +1709,15 @@ addConnection(resetclick.MouseButton1Click:Connect(function()
     end
 end))
 
+addConnection(avoidclick.MouseButton1Click:Connect(function()
+    if not autofarmcoins then
+        return -- Auto avoid cannot be toggled on unless auto farm is active
+    end
+
+    autoavoid = not autoavoid
+    setavoidtogglestate(autoavoid)
+end))
+
 -- ======================== ABORT / CLEANUP ========================
 local function abortScript()
     if not scriptrunning then
@@ -1621,6 +1727,7 @@ local function abortScript()
     scriptrunning = false
     autofarmcoins = false
     autoreset = false
+    autoavoid = false
 
     stopmovement()
     setnoclip(false)
@@ -1826,11 +1933,13 @@ task.spawn(function()
                     return false
                 end
 
-                -- Check if we are holding a knife (meaning we are the Murderer)
+                if not autoavoid then
+                    return true
+                end
+
                 local myRole, _ = getPlayerRoleAndColor(localplayer)
                 local isMyRoleMurderer = (myRole == "Murderer")
 
-                -- If we are the Murderer, avoid Sheriff and Hero
                 if isMyRoleMurderer then
                     for _, sheriff in ipairs(sheriffPlayers) do
                         local sheriffRoot = sheriff.Character
@@ -1852,7 +1961,6 @@ task.spawn(function()
                         end
                     end
                 else
-                    -- Otherwise (Innocent/Sheriff), avoid the Murderer
                     for _, murderer in ipairs(murdererPlayers) do
                         local murdererRoot = murderer.Character
                             and murderer.Character:FindFirstChild("HumanoidRootPart")
@@ -1903,9 +2011,28 @@ task.spawn(function()
                     targethighlight = Instance.new("Highlight")
                     targethighlight.Name = "CurrentCoinHighlight"
                     targethighlight.Adornee = nearestcoin
-                    targethighlight.FillColor = COLORS.Default
+
+                    local highlightColor = COLORS.Default
+                    if autoavoid then
+                        local myRole, _ = getPlayerRoleAndColor(localplayer)
+                        if myRole == "Murderer" then
+                            -- If we are Murderer, we are avoiding Sheriff/Hero -> highlight target coin with Gun/Hero color
+                            if foundSher then
+                                highlightColor = COLORS.Gun
+                            elseif foundHero then
+                                highlightColor = COLORS.Hero
+                            end
+                        else
+                            -- If we are Innocent/Sheriff, we are avoiding Murderer -> highlight target coin with Knife color
+                            if foundMurd then
+                                highlightColor = COLORS.Knife
+                            end
+                        end
+                    end
+
+                    targethighlight.FillColor = highlightColor
                     targethighlight.FillTransparency = 0.8
-                    targethighlight.OutlineColor = getOutlineColor(COLORS.Default)
+                    targethighlight.OutlineColor = getOutlineColor(highlightColor)
                     targethighlight.OutlineTransparency = 0.2
                     targethighlight.Parent = hiddenUI
 
