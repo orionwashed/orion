@@ -813,7 +813,7 @@ local function setstatus(text, color)
     roundstatus.TextColor3 = color
 
     if text == "disabled" then
-        roundstatus.TextTransparency = 0.4
+        roundstatus.TextTransparency = 0.2
         if statusStroke then
             statusStroke.Transparency = 0.8
         end
@@ -1938,9 +1938,8 @@ task.spawn(function()
                 end
 
                 local myRole, _ = getPlayerRoleAndColor(localplayer)
-                local isMyRoleMurderer = (myRole == "Murderer")
 
-                if isMyRoleMurderer then
+                if myRole == "Murderer" then
                     for _, sheriff in ipairs(sheriffPlayers) do
                         local sheriffRoot = sheriff.Character
                             and sheriff.Character:FindFirstChild("HumanoidRootPart")
@@ -1961,6 +1960,7 @@ task.spawn(function()
                         end
                     end
                 else
+                    -- Innocent, Sheriff, or Hero (all avoid Murderer)
                     for _, murderer in ipairs(murdererPlayers) do
                         local murdererRoot = murderer.Character
                             and murderer.Character:FindFirstChild("HumanoidRootPart")
@@ -2011,28 +2011,9 @@ task.spawn(function()
                     targethighlight = Instance.new("Highlight")
                     targethighlight.Name = "CurrentCoinHighlight"
                     targethighlight.Adornee = nearestcoin
-
-                    local highlightColor = COLORS.Default
-                    if autoavoid then
-                        local myRole, _ = getPlayerRoleAndColor(localplayer)
-                        if myRole == "Murderer" then
-                            -- If we are Murderer, we are avoiding Sheriff/Hero -> highlight target coin with Gun/Hero color
-                            if foundSher then
-                                highlightColor = COLORS.Gun
-                            elseif foundHero then
-                                highlightColor = COLORS.Hero
-                            end
-                        else
-                            -- If we are Innocent/Sheriff, we are avoiding Murderer -> highlight target coin with Knife color
-                            if foundMurd then
-                                highlightColor = COLORS.Knife
-                            end
-                        end
-                    end
-
-                    targethighlight.FillColor = highlightColor
+                    targethighlight.FillColor = COLORS.Default
                     targethighlight.FillTransparency = 0.8
-                    targethighlight.OutlineColor = getOutlineColor(highlightColor)
+                    targethighlight.OutlineColor = getOutlineColor(COLORS.Default)
                     targethighlight.OutlineTransparency = 0.2
                     targethighlight.Parent = hiddenUI
 
