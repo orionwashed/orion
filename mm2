@@ -32,14 +32,14 @@ local chamEnabled = false
 local MIN_WIDTH = 220
 local BASE_HEIGHT = 244
 local ROUND_START_DELAY = 25
-local SAFE_RADIUS = 15
+local SAFE_RADIUS = 20
 local CHAM_REPAIR_INTERVAL = 0.75
 
 local COIN_REFRESH_INTERVAL = 2
 local EMPTY_SEARCH_WAIT = 0.15
 local COIN_TRAVEL_SPEED = 20.5
 
-local GUN_DEATH_RADIUS = 15
+local GUN_DEATH_RADIUS = 10
 
 local COLORS = {
     Gun = Color3.fromRGB(0, 126, 245),
