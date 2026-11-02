@@ -31,7 +31,7 @@ local chamEnabled = false
 
 local MIN_WIDTH = 220
 local BASE_HEIGHT = 244
-local ROUND_START_DELAY = 25
+local ROUND_START_DELAY = 20
 local SAFE_RADIUS = 15
 local CHAM_REPAIR_INTERVAL = 0.75
 
