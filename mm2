@@ -31,8 +31,8 @@ local chamEnabled = false
 
 local MIN_WIDTH = 220
 local BASE_HEIGHT = 244
-local ROUND_START_DELAY = 20
-local SAFE_RADIUS = 15
+local ROUND_START_DELAY = 15
+local SAFE_RADIUS = 18
 local CHAM_REPAIR_INTERVAL = 0.75
 
 local COIN_REFRESH_INTERVAL = 2
@@ -1944,12 +1944,9 @@ task.spawn(function()
                         local sheriffRoot = sheriff.Character
                             and sheriff.Character:FindFirstChild("HumanoidRootPart")
 
-                        if sheriffRoot then
-                            -- Avoid if coin is within 20 studs of threat OR if *you* (hrp) are within 20 studs of threat
-                            if (sheriffRoot.Position - coin.Position).Magnitude < SAFE_RADIUS 
-                                or (sheriffRoot.Position - hrp.Position).Magnitude < SAFE_RADIUS then
-                                return false
-                            end
+                        if sheriffRoot
+                            and (sheriffRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
+                            return false
                         end
                     end
 
@@ -1957,11 +1954,9 @@ task.spawn(function()
                         local heroRoot = hero.Character
                             and hero.Character:FindFirstChild("HumanoidRootPart")
 
-                        if heroRoot then
-                            if (heroRoot.Position - coin.Position).Magnitude < SAFE_RADIUS 
-                                or (heroRoot.Position - hrp.Position).Magnitude < SAFE_RADIUS then
-                                return false
-                            end
+                        if heroRoot
+                            and (heroRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
+                            return false
                         end
                     end
                 else
@@ -1970,12 +1965,9 @@ task.spawn(function()
                         local murdererRoot = murderer.Character
                             and murderer.Character:FindFirstChild("HumanoidRootPart")
 
-                        if murdererRoot then
-                            -- Avoid if coin is within 20 studs of murderer OR if *you* (hrp) are within 20 studs of murderer
-                            if (murdererRoot.Position - coin.Position).Magnitude < SAFE_RADIUS 
-                                or (murdererRoot.Position - hrp.Position).Magnitude < SAFE_RADIUS then
-                                return false
-                            end
+                        if murdererRoot
+                            and (murdererRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
+                            return false
                         end
                     end
                 end
@@ -2020,7 +2012,7 @@ task.spawn(function()
                     targethighlight.Name = "CurrentCoinHighlight"
                     targethighlight.Adornee = nearestcoin
                     targethighlight.FillColor = COLORS.Default
-                    targethighlight.FillTransparency = 0.8
+                    targethighlight.FillTransparency = 0.6
                     targethighlight.OutlineColor = getOutlineColor(COLORS.Default)
                     targethighlight.OutlineTransparency = 0.2
                     targethighlight.Parent = hiddenUI
