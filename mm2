@@ -1944,9 +1944,12 @@ task.spawn(function()
                         local sheriffRoot = sheriff.Character
                             and sheriff.Character:FindFirstChild("HumanoidRootPart")
 
-                        if sheriffRoot
-                            and (sheriffRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
-                            return false
+                        if sheriffRoot then
+                            -- Avoid if coin is within 20 studs of threat OR if *you* (hrp) are within 20 studs of threat
+                            if (sheriffRoot.Position - coin.Position).Magnitude < SAFE_RADIUS 
+                                or (sheriffRoot.Position - hrp.Position).Magnitude < SAFE_RADIUS then
+                                return false
+                            end
                         end
                     end
 
@@ -1954,9 +1957,11 @@ task.spawn(function()
                         local heroRoot = hero.Character
                             and hero.Character:FindFirstChild("HumanoidRootPart")
 
-                        if heroRoot
-                            and (heroRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
-                            return false
+                        if heroRoot then
+                            if (heroRoot.Position - coin.Position).Magnitude < SAFE_RADIUS 
+                                or (heroRoot.Position - hrp.Position).Magnitude < SAFE_RADIUS then
+                                return false
+                            end
                         end
                     end
                 else
@@ -1965,9 +1970,12 @@ task.spawn(function()
                         local murdererRoot = murderer.Character
                             and murderer.Character:FindFirstChild("HumanoidRootPart")
 
-                        if murdererRoot
-                            and (murdererRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
-                            return false
+                        if murdererRoot then
+                            -- Avoid if coin is within 20 studs of murderer OR if *you* (hrp) are within 20 studs of murderer
+                            if (murdererRoot.Position - coin.Position).Magnitude < SAFE_RADIUS 
+                                or (murdererRoot.Position - hrp.Position).Magnitude < SAFE_RADIUS then
+                                return false
+                            end
                         end
                     end
                 end
