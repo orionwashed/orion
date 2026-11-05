@@ -1805,9 +1805,9 @@ task.spawn(function()
             local timeInRound = tick() - roundActiveStartTime
             local searchingDuration = (searchingCoinsStartTime > 0) and (tick() - searchingCoinsStartTime) or 0
 
-            if timeInRound >= 30 and searchingDuration >= 5 and currentstatustext == "waiting for coins" then
+            if timeInRound >= 30 and searchingDuration >= 1 and currentstatustext == "waiting for coins" then
                 local now = tick()
-                if now - lastAutoResetTick >= 0.5 then
+                if now - lastAutoResetTick >= 1 then
                     lastAutoResetTick = now
                     hrp.CFrame = hrp.CFrame + Vector3.new(0, -500, 0)
                 end
