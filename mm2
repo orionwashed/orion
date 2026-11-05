@@ -32,7 +32,7 @@ local chamEnabled = false
 local MIN_WIDTH = 220
 local BASE_HEIGHT = 244
 local ROUND_START_DELAY = 20
-local SAFE_RADIUS = 18
+local SAFE_RADIUS = 20
 local CHAM_REPAIR_INTERVAL = 0.75
 
 local COIN_REFRESH_INTERVAL = 2
