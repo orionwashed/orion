@@ -33,6 +33,7 @@ local MIN_WIDTH = 220
 local BASE_HEIGHT = 244
 local ROUND_START_DELAY = 20
 local SAFE_RADIUS = 20
+local THREAT_DANGER_RADIUS = 10
 local CHAM_REPAIR_INTERVAL = 0.75
 
 local COIN_REFRESH_INTERVAL = 2
@@ -96,6 +97,8 @@ local nextCoinRefresh = 0
 local roundActiveStartTime = 0
 local lastAutoResetTick = 0
 local searchingCoinsStartTime = 0
+local hasTriggeredAutoResetOnce = false
+local isExecutingAutoResetDeath = false
 
 local function addConnection(connection)
     table.insert(globalConns, connection)
@@ -1409,6 +1412,8 @@ updateroundstatus = function()
         table.clear(activecoins)
         table.clear(activecoinset)
         hascountedcurrentround = false
+        hasTriggeredAutoResetOnce = false
+        isExecutingAutoResetDeath = false
 
         if autofarmcoins then
             setstatus("intermission", Color3.fromRGB(235, 180, 50))
@@ -1443,6 +1448,8 @@ updateroundstatus = function()
     table.clear(activecoins)
     table.clear(activecoinset)
     hascountedcurrentround = false
+    hasTriggeredAutoResetOnce = false
+    isExecutingAutoResetDeath = false
 
     if autofarmcoins then
         preptimeremaining = ROUND_START_DELAY
@@ -1572,6 +1579,7 @@ local function setupdeathlistener(character)
             isgameactive = false
             waitingfornextround = true
             preptimeremaining = 0
+            isExecutingAutoResetDeath = false
 
             if autofarmcoins then
                 setstatus("died", Color3.fromRGB(230, 80, 80))
@@ -1592,6 +1600,8 @@ addConnection(localplayer.CharacterAdded:Connect(function(character)
     stopmovement()
     table.clear(activecoins)
     table.clear(activecoinset)
+    hasTriggeredAutoResetOnce = false
+    isExecutingAutoResetDeath = false
 
     setupdeathlistener(character)
 
@@ -1800,16 +1810,36 @@ task.spawn(function()
         local hrp = character and character:FindFirstChild("HumanoidRootPart")
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-        -- Auto Reset extra feature logic check (only runs if both autofarm and autoreset are on)
-        if autofarmcoins and autoreset and isgameactive and not waitingfornextround and hrp and humanoid and humanoid.Health > 0 then
+        -- Auto Reset / Stuck Feature Logic Check
+        if autofarmcoins and isgameactive and not waitingfornextround and hrp and humanoid and humanoid.Health > 0 and not isExecutingAutoResetDeath then
             local timeInRound = tick() - roundActiveStartTime
             local searchingDuration = (searchingCoinsStartTime > 0) and (tick() - searchingCoinsStartTime) or 0
 
-            if timeInRound >= 30 and searchingDuration >= 1 and currentstatustext == "waiting for coins" then
+            if timeInRound >= 30 and searchingDuration >= 1 and currentstatustext == "waiting for coins" and not hasTriggeredAutoResetOnce then
                 local now = tick()
                 if now - lastAutoResetTick >= 1 then
                     lastAutoResetTick = now
-                    hrp.CFrame = hrp.CFrame + Vector3.new(0, -500, 0)
+                    hasTriggeredAutoResetOnce = true
+
+                    if not autoreset then
+                        hrp.CFrame = hrp.CFrame + Vector3.new(0, 100, 0)
+                    else
+                        hrp.CFrame = hrp.CFrame + Vector3.new(0, 100, 0)
+                        isExecutingAutoResetDeath = true
+
+                        task.spawn(function()
+                            task.wait(5)
+                            while scriptrunning and isgameactive and humanoid and humanoid.Health > 0 do
+                                local currentHrp = localplayer.Character and localplayer.Character:FindFirstChild("HumanoidRootPart")
+                                local currentHum = localplayer.Character and localplayer.Character:FindFirstChildOfClass("Humanoid")
+                                if not currentHrp or not currentHum or currentHum.Health <= 0 then
+                                    break
+                                end
+                                currentHrp.CFrame = currentHrp.CFrame + Vector3.new(0, -250, 0)
+                                task.wait(1)
+                            end
+                        end)
+                    end
                 end
             end
         end
@@ -1921,7 +1951,30 @@ task.spawn(function()
         if hrp and humanoid and humanoid.Health > 0
             and isgameactive
             and not waitingfornextround
-            and autofarmcoins then
+            and autofarmcoins
+            and not isExecutingAutoResetDeath then
+
+            local function getRelevantThreats()
+                local threats = {}
+                local myRole, _ = getPlayerRoleAndColor(localplayer)
+
+                if myRole == "Murderer" then
+                    for _, sheriff in ipairs(sheriffPlayers) do
+                        local root = sheriff.Character and sheriff.Character:FindFirstChild("HumanoidRootPart")
+                        if root then table.insert(threats, root.Position) end
+                    end
+                    for _, hero in ipairs(heroPlayers) do
+                        local root = hero.Character and hero.Character:FindFirstChild("HumanoidRootPart")
+                        if root then table.insert(threats, root.Position) end
+                    end
+                else
+                    for _, murderer in ipairs(murdererPlayers) do
+                        local root = murderer.Character and murderer.Character:FindFirstChild("HumanoidRootPart")
+                        if root then table.insert(threats, root.Position) end
+                    end
+                end
+                return threats
+            end
 
             local function isSafeCoinTarget(coin)
                 if not coin
@@ -1937,89 +1990,95 @@ task.spawn(function()
                     return true
                 end
 
-                local myRole, _ = getPlayerRoleAndColor(localplayer)
-
-                if myRole == "Murderer" then
-                    for _, sheriff in ipairs(sheriffPlayers) do
-                        local sheriffRoot = sheriff.Character
-                            and sheriff.Character:FindFirstChild("HumanoidRootPart")
-
-                        if sheriffRoot
-                            and (sheriffRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
-                            return false
-                        end
-                    end
-
-                    for _, hero in ipairs(heroPlayers) do
-                        local heroRoot = hero.Character
-                            and hero.Character:FindFirstChild("HumanoidRootPart")
-
-                        if heroRoot
-                            and (heroRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
-                            return false
-                        end
-                    end
-                else
-                    -- Innocent, Sheriff, or Hero (all avoid Murderer)
-                    for _, murderer in ipairs(murdererPlayers) do
-                        local murdererRoot = murderer.Character
-                            and murderer.Character:FindFirstChild("HumanoidRootPart")
-
-                        if murdererRoot
-                            and (murdererRoot.Position - coin.Position).Magnitude < SAFE_RADIUS then
-                            return false
-                        end
+                local threats = getRelevantThreats()
+                for _, threatPos in ipairs(threats) do
+                    -- Never target coins within 20 studs of a threat
+                    if (threatPos - coin.Position).Magnitude < 20 then
+                        return false
                     end
                 end
 
                 return true
             end
 
-            if currenttargetcoin and not isSafeCoinTarget(currenttargetcoin) then
+            -- Check if player is currently within 10 studs of any threat
+            local threats = getRelevantThreats()
+            local isTooCloseToThreat = false
+            if autoavoid then
+                for _, threatPos in ipairs(threats) do
+                    if (threatPos - hrp.Position).Magnitude < THREAT_DANGER_RADIUS then
+                        isTooCloseToThreat = true
+                        break
+                    end
+                end
+            end
+
+            if currenttargetcoin and (not isSafeCoinTarget(currenttargetcoin) or isTooCloseToThreat) then
                 stopmovement()
             end
 
             if not istweening then
-                local nearestcoin
-                local shortestdist = math.huge
-
-                for i = #activecoins, 1, -1 do
-                    local coin = activecoins[i]
-
-                    if not isSafeCoinTarget(coin) then
-                        if coin then
-                            activecoinset[coin] = nil
+                local chosenCoin
+                
+                if isTooCloseToThreat then
+                    -- If within 10 studs of a threat, target the FURHEST away coin until away
+                    local furthestDist = -math.huge
+                    for i = #activecoins, 1, -1 do
+                        local coin = activecoins[i]
+                        if coin and coin.Parent and coin:IsA("BasePart") and coin.Transparency < 1 then
+                            local distance = (coin.Position - hrp.Position).Magnitude
+                            if distance > furthestDist then
+                                furthestDist = distance
+                                chosenCoin = coin
+                            end
                         end
+                    end
+                else
+                    -- Normal operation: find a close coin that isn't within 20 studs of the threat
+                    local shortestdist = math.huge
 
-                        table.remove(activecoins, i)
-                    else
-                        local distance = (coin.Position - hrp.Position).Magnitude
+                    for i = #activecoins, 1, -1 do
+                        local coin = activecoins[i]
 
-                        if distance < shortestdist then
-                            shortestdist = distance
-                            nearestcoin = coin
+                        if not isSafeCoinTarget(coin) then
+                            if coin then
+                                activecoinset[coin] = nil
+                            end
+
+                            table.remove(activecoins, i)
+                        else
+                            local distance = (coin.Position - hrp.Position).Magnitude
+
+                            if distance < shortestdist then
+                                shortestdist = distance
+                                chosenCoin = coin
+                            end
                         end
                     end
                 end
 
-                if nearestcoin then
+                if chosenCoin then
                     istweening = true
-                    currenttargetcoin = nearestcoin
+                    currenttargetcoin = chosenCoin
 
                     removeTargetHighlight()
 
                     targethighlight = Instance.new("Highlight")
                     targethighlight.Name = "CurrentCoinHighlight"
-                    targethighlight.Adornee = nearestcoin
+                    targethighlight.Adornee = chosenCoin
                     targethighlight.FillColor = COLORS.Default
                     targethighlight.FillTransparency = 0.6
                     targethighlight.OutlineColor = getOutlineColor(COLORS.Default)
                     targethighlight.OutlineTransparency = 0.2
                     targethighlight.Parent = hiddenUI
 
-                    setstatus("collecting coins", Color3.fromRGB(100, 220, 120))
+                    if isTooCloseToThreat then
+                        setstatus("avoiding threat", Color3.fromRGB(230, 80, 80))
+                    else
+                        setstatus("collecting coins", Color3.fromRGB(100, 220, 120))
+                    end
 
-                    local distance = (nearestcoin.Position - hrp.Position).Magnitude
+                    local distance = (chosenCoin.Position - hrp.Position).Magnitude
                     local travelTime = math.max(distance / COIN_TRAVEL_SPEED, 0.05)
 
                     local tween = tweenservice:Create(
@@ -2029,7 +2088,7 @@ task.spawn(function()
                             Enum.EasingStyle.Linear,
                             Enum.EasingDirection.InOut
                         ),
-                        {CFrame = CFrame.new(nearestcoin.Position)}
+                        {CFrame = CFrame.new(chosenCoin.Position)}
                     )
 
                     activetween = tween
@@ -2040,10 +2099,10 @@ task.spawn(function()
                         end
 
                         if playbackState == Enum.PlaybackState.Completed then
-                            removeCoin(nearestcoin)
+                            removeCoin(chosenCoin)
 
                             for i = #activecoins, 1, -1 do
-                                if activecoins[i] == nearestcoin then
+                                if activecoins[i] == chosenCoin then
                                     table.remove(activecoins, i)
                                     break
                                 end
