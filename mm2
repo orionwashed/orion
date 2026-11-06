@@ -31,7 +31,7 @@ local chamEnabled = false
 
 local MIN_WIDTH = 220
 local BASE_HEIGHT = 244
-local ROUND_START_DELAY = 20
+local ROUND_START_DELAY = 24
 local SAFE_RADIUS = 20
 local CHAM_REPAIR_INTERVAL = 0.75
 
@@ -1814,7 +1814,7 @@ task.spawn(function()
             local timeInRound = tick() - roundActiveStartTime
             local searchingDuration = (searchingCoinsStartTime > 0) and (tick() - searchingCoinsStartTime) or 0
 
-            if timeInRound >= 30 and searchingDuration >= 1 and currentstatustext == "waiting for coins" and not hasTriggeredAutoResetOnce then
+            if timeInRound >= 15 and searchingDuration >= 0.5 and currentstatustext == "waiting for coins" and not hasTriggeredAutoResetOnce then
                 local now = tick()
                 if now - lastAutoResetTick >= 1 then
                     lastAutoResetTick = now
