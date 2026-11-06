@@ -1852,7 +1852,7 @@ task.spawn(function()
                         isExecutingAutoResetDeath = true
 
                         task.spawn(function()
-                            task.wait(6)
+                            task.wait(1)
                             while scriptrunning and isgameactive and humanoid and humanoid.Health > 0 do
                                 local currentHrp = localplayer.Character and localplayer.Character:FindFirstChild("HumanoidRootPart")
                                 local currentHum = localplayer.Character and localplayer.Character:FindFirstChildOfClass("Humanoid")
