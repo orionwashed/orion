@@ -71,6 +71,7 @@ local currentmap = nil
 local roundgeneration = 0
 local preptimeremaining = 0
 local ischeckingmap = false
+local hasTeleportedAt10s = false -- Track 10s prep teleport
 
 local sheriffDiedThisRound = false
 local previousRoles = {}
@@ -1407,6 +1408,7 @@ updateroundstatus = function()
         isgameactive = false
         waitingfornextround = false
         preptimeremaining = 0
+        hasTeleportedAt10s = false
 
         sheriffDiedThisRound = false
         currentSheriffUserId = nil
@@ -1450,6 +1452,7 @@ updateroundstatus = function()
 
     isgameactive = false
     waitingfornextround = false
+    hasTeleportedAt10s = false
     sheriffDiedThisRound = false
     currentSheriffUserId = nil
 
@@ -1495,6 +1498,17 @@ updateroundstatus = function()
 
                 roundstatus.Text =
                     "status: preparing (" .. preptimeremaining .. "s)"
+
+                -- Teleport 100 studs up once if prep timer hits 10 seconds remaining
+                if preptimeremaining == 10 and not hasTeleportedAt10s then
+                    hasTeleportedAt10s = true
+                    local character = localplayer.Character
+                    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+                    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+                    if hrp and humanoid and humanoid.Health > 0 then
+                        hrp.CFrame = hrp.CFrame + Vector3.new(0, 100, 0)
+                    end
+                end
             end
         end
 
@@ -1594,6 +1608,7 @@ local function setupdeathlistener(character)
             isgameactive = false
             waitingfornextround = true
             preptimeremaining = 0
+            hasTeleportedAt10s = false
             isExecutingAutoResetDeath = false
 
             if autofarmcoins then
@@ -1616,6 +1631,7 @@ addConnection(localplayer.CharacterAdded:Connect(function(character)
     table.clear(activecoins)
     table.clear(activecoinset)
     hasTriggeredAutoResetOnce = false
+    hasTeleportedAt10s = false
     isExecutingAutoResetDeath = false
 
     setupdeathlistener(character)
