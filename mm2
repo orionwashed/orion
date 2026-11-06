@@ -1390,7 +1390,7 @@ local function teleportToIntermission()
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     
     if hrp and humanoid and humanoid.Health > 0 then
-        hrp.CFrame = CFrame.new(630.641, 465.871, 23.214)
+        hrp.CFrame = CFrame.new(608.648, 435.071, -23.368)
     end
 end
 
