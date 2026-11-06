@@ -31,7 +31,7 @@ local chamEnabled = false
 
 local MIN_WIDTH = 220
 local BASE_HEIGHT = 244
-local ROUND_START_DELAY = 24
+local ROUND_START_DELAY = 25
 local SAFE_RADIUS = 20
 local CHAM_REPAIR_INTERVAL = 0.75
 
@@ -1383,6 +1383,16 @@ local function checkworkspaceformap()
     return nil
 end
 
+local function teleportToIntermission()
+    local character = localplayer.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    
+    if hrp and humanoid and humanoid.Health > 0 then
+        hrp.CFrame = CFrame.new(630.641, 465.871, 23.214)
+    end
+end
+
 local updateroundstatus
 
 updateroundstatus = function()
@@ -1416,6 +1426,12 @@ updateroundstatus = function()
 
         if autofarmcoins then
             setstatus("intermission", Color3.fromRGB(235, 180, 50))
+            
+            task.delay(0.5, function()
+                if not isgameactive and not currentmap then
+                    teleportToIntermission()
+                end
+            end)
         else
             setstatus("disabled", Color3.new(1, 1, 1))
         end
@@ -1604,6 +1620,13 @@ addConnection(localplayer.CharacterAdded:Connect(function(character)
 
     setupdeathlistener(character)
 
+    -- Teleport to intermission coordinates on respawn if auto farm is enabled
+    task.delay(0.3, function()
+        if scriptrunning and autofarmcoins then
+            teleportToIntermission()
+        end
+    end)
+
     task.delay(1.5, function()
         if scriptrunning then
             updateroundstatus()
@@ -1698,8 +1721,10 @@ addConnection(farmclick.MouseButton1Click:Connect(function()
             )
         elseif waitingfornextround then
             setstatus("died", Color3.fromRGB(230, 80, 80))
+            teleportToIntermission()
         else
             setstatus("intermission", Color3.fromRGB(235, 180, 50))
+            teleportToIntermission()
         end
     end
 end))
@@ -1814,9 +1839,9 @@ task.spawn(function()
             local timeInRound = tick() - roundActiveStartTime
             local searchingDuration = (searchingCoinsStartTime > 0) and (tick() - searchingCoinsStartTime) or 0
 
-            if timeInRound >= 15 and searchingDuration >= 0.5 and currentstatustext == "waiting for coins" and not hasTriggeredAutoResetOnce then
+            if timeInRound >= 20 and searchingDuration >= 0.5 and currentstatustext == "waiting for coins" and not hasTriggeredAutoResetOnce then
                 local now = tick()
-                if now - lastAutoResetTick >= 1 then
+                if now - lastAutoResetTick >= 0.5 then
                     lastAutoResetTick = now
                     hasTriggeredAutoResetOnce = true
 
@@ -1827,7 +1852,7 @@ task.spawn(function()
                         isExecutingAutoResetDeath = true
 
                         task.spawn(function()
-                            task.wait(5)
+                            task.wait(8)
                             while scriptrunning and isgameactive and humanoid and humanoid.Health > 0 do
                                 local currentHrp = localplayer.Character and localplayer.Character:FindFirstChild("HumanoidRootPart")
                                 local currentHum = localplayer.Character and localplayer.Character:FindFirstChildOfClass("Humanoid")
